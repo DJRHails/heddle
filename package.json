@@ -6,11 +6,13 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./backends/anthropic": "./src/backends/anthropic.js"
+    "./backends/anthropic": "./src/backends/anthropic.js",
+    "./judges/jev": "./src/judges/jev.js",
+    "./judges/llm": "./src/judges/llm.js"
   },
   "scripts": {
     "test": "vitest run",
-    "lint": "node --check src/*.js src/backends/*.js examples/*.js"
+    "lint": "node --check src/*.js src/backends/*.js src/judges/*.js examples/*.js"
   },
   "engines": {
     "node": ">=22"

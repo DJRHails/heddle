@@ -1,6 +1,7 @@
 /**
- * The three primitives, bound to one run's scheduler.
+ * The primitives, bound to one run's scheduler.
  *
+ * Generation:
  * - agent(prompt, opts) -> Promise<any>: one subagent call. Resolves the backend's result
  *   (structured object when opts.schema is set, final text otherwise), or null on terminal
  *   failure after the backend's bounded retries — a dead agent never kills a fan-out. Cached
@@ -13,12 +14,22 @@
  *   the slowest single chain. A stage that throws drops that item to null and skips its
  *   remaining stages. Stage callbacks receive (previous, originalItem, index).
  *
- * Abort is the one error that propagates through everything: an aborted run must unwind, never
- * read as a null finding.
+ * Judgment (see decisions.js for feels/match built on it):
+ * - judge(state, question) -> Promise<answer>: one typed question about a state, answered with
+ *   calibrated probabilities by the run's judge (Jev, or a text model emulating Jev's contract
+ *   through structured output). Unlike agent(), a judgment that cannot be obtained THROWS: null
+ *   is reserved for "the model is unsure", which is a real outcome a script routes on, so an
+ *   infrastructure failure must not be spelled the same way.
+ *
+ * Every model call — agent or judge — shares one scheduler: the journal (replay), the total
+ * call cap (runaway-loop backstop), the concurrency ceiling, and the abort race. Abort is the
+ * one error that propagates through everything: an aborted run must unwind, never read as a
+ * null finding.
  */
 
+import { makeDecisions } from "./decisions.js";
 import { realClock } from "./determinism.js";
-import { callKey } from "./journal.js";
+import { callKey, judgeKey } from "./journal.js";
 
 export function isAbortError(error) {
   return error instanceof Error && error.name === "AbortError";
@@ -30,7 +41,7 @@ function abortError() {
   return error;
 }
 
-export function makeApi({ backend, journal, signal, maxAgents, concurrency, args }) {
+export function makeApi({ backend, judge, journal, signal, maxAgents, concurrency, args }) {
   let inFlight = 0;
   let launched = 0;
   const waiters = [];
@@ -52,70 +63,109 @@ export function makeApi({ backend, journal, signal, maxAgents, concurrency, args
     inFlight -= 1;
   }
 
-  async function agent(prompt, opts = {}) {
-    if (typeof prompt !== "string" || !prompt.trim()) {
-      throw new TypeError("agent(prompt, opts): prompt must be a non-empty string");
-    }
-    const key = callKey(prompt, opts);
+  /** Race a call against the abort signal so an in-flight call cannot outlive an abort. */
+  function raceAbort(call) {
+    if (!signal) return call;
+    return Promise.race([
+      call,
+      new Promise((_, rejectRace) =>
+        signal.addEventListener(
+          "abort",
+          () => {
+            Promise.resolve(call).catch(() => {}); // silence the loser
+            rejectRace(abortError());
+          },
+          { once: true },
+        ),
+      ),
+    ]);
+  }
+
+  /**
+   * Settle one model call through the shared scheduler: replay from the journal when cached,
+   * else enforce the cap, take a slot, run `call`, and journal the outcome. Rethrows failures
+   * (journaled as status "error"); callers decide whether that becomes null or propagates.
+   * `record` is the journal entry's descriptive part (what was asked, and of whom).
+   */
+  async function settle(key, record, call) {
     const occurrence = journal.nextOccurrence(key);
     const cached = journal.replay(key, occurrence);
     if (cached !== undefined) return cached.result;
     if (signal?.aborted) throw abortError();
     launched += 1;
     if (launched > maxAgents) {
-      throw new Error(
-        `agent cap reached (${maxAgents}) — a runaway loop backstop; raise maxAgents if the` +
-          " fan-out is intentional",
+      const error = new Error(
+        `model-call cap reached (${maxAgents}) — a runaway loop backstop; raise maxAgents if` +
+          " the fan-out is intentional",
       );
+      error.name = "CapError";
+      throw error;
     }
     await acquire();
     const started = realClock.now();
-    const publicOpts = { ...opts };
     try {
       if (signal?.aborted) throw abortError();
-      const call = backend({ ...opts, prompt, signal });
-      // Race the signal so an in-flight call cannot outlive an abort even when the backend
-      // ignores it; the losing promise is silenced to avoid an unhandled rejection.
-      const result = signal
-        ? await Promise.race([
-            call,
-            new Promise((_, rejectRace) =>
-              signal.addEventListener(
-                "abort",
-                () => {
-                  Promise.resolve(call).catch(() => {});
-                  rejectRace(abortError());
-                },
-                { once: true },
-              ),
-            ),
-          ])
-        : await call;
+      const result = await raceAbort(call());
       journal.append({
         key,
         occurrence,
-        prompt,
-        opts: publicOpts,
+        ...record,
         status: "ok",
         result,
         ms: realClock.now() - started,
       });
       return result;
     } catch (error) {
-      if (isAbortError(error)) throw error;
-      journal.append({
-        key,
-        occurrence,
-        prompt,
-        opts: publicOpts,
-        status: "error",
-        error: String(error?.message ?? error),
-        ms: realClock.now() - started,
-      });
-      return null; // terminal failure: the caller filters; the journal has the story
+      if (!isAbortError(error)) {
+        journal.append({
+          key,
+          occurrence,
+          ...record,
+          status: "error",
+          error: String(error?.message ?? error),
+          ms: realClock.now() - started,
+        });
+      }
+      throw error;
     } finally {
       release();
     }
+  }
+
+  async function agent(prompt, opts = {}) {
+    if (typeof prompt !== "string" || !prompt.trim()) {
+      throw new TypeError("agent(prompt, opts): prompt must be a non-empty string");
+    }
+    const record = { kind: "agent", prompt, opts: { ...opts } };
+    try {
+      return await settle(callKey(prompt, opts), record, () => backend({ ...opts, prompt, signal }));
+    } catch (error) {
+      if (isAbortError(error) || error?.name === "CapError") throw error;
+      return null; // terminal failure: the caller filters; the journal has the story
+    }
+  }
+
+  async function judgeOne(state, question) {
+    if (state === undefined) {
+      throw new TypeError("judge(state, question): state is required (a string or JSON value)");
+    }
+    if (!question || typeof question.type !== "string") {
+      throw new TypeError(
+        'judge(state, question): question must be {type: "noul" | "choice" | "score", ...}',
+      );
+    }
+    const record = { kind: "judge", state, question, model: judge.model ?? null };
+    const key = judgeKey(state, question, judge.model);
+    const response = await settle(key, record, () =>
+      judge({ state, questions: { q: question }, signal }),
+    );
+    const answer = response?.answers?.q;
+    if (!answer || answer.type !== question.type) {
+      throw new Error(
+        `judge returned no ${question.type} answer — got ${JSON.stringify(response).slice(0, 200)}`,
+      );
+    }
+    return answer;
   }
 
   async function parallel(thunks) {
@@ -169,5 +219,5 @@ export function makeApi({ backend, journal, signal, maxAgents, concurrency, args
     );
   }
 
-  return { agent, parallel, pipeline, args };
+  return { agent, parallel, pipeline, judge: judgeOne, ...makeDecisions(judgeOne), args };
 }

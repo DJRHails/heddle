@@ -214,7 +214,7 @@ describe("caps and abort", () => {
     const script = async (w) => {
       for (let i = 0; i < 100; i += 1) await w.agent(`call ${i}`);
     };
-    await expect(run(script, { backend, maxAgents: 5 })).rejects.toThrow(/agent cap reached/);
+    await expect(run(script, { backend, maxAgents: 5 })).rejects.toThrow(/cap reached/);
   });
 
   it("abort unwinds the run instead of reading as null findings", async () => {
