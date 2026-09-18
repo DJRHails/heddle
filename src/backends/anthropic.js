@@ -12,58 +12,22 @@
 
 import { realClock } from "../determinism.js";
 import { MAX_SCHEMA_RETRIES, schemaErrors } from "../schema.js";
+import { postJson } from "./transport.js";
 
 const API_URL = "https://api.anthropic.com/v1/messages";
-const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]);
-const MAX_TRANSPORT_RETRIES = 3;
 
 const RETURN_VALUE_CONTRACT =
   "Your final message text is returned verbatim to a program as its data — output only the" +
   " answer itself, with no preamble, no meta-commentary, and no markdown fences unless the" +
   " answer is code.";
 
-function sleep(ms, signal) {
-  return new Promise((resolveSleep, rejectSleep) => {
-    const timer = setTimeout(resolveSleep, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        const error = new Error("run aborted");
-        error.name = "AbortError";
-        rejectSleep(error);
-      },
-      { once: true },
-    );
+function postMessages(body, { apiKey, signal }) {
+  return postJson(API_URL, {
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body,
+    signal,
+    label: "anthropic",
   });
-}
-
-async function postMessages(body, { apiKey, signal }) {
-  for (let attempt = 0; ; attempt += 1) {
-    let response;
-    try {
-      response = await fetch(API_URL, {
-        method: "POST",
-        signal,
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify(body),
-      });
-    } catch (error) {
-      if (error?.name === "AbortError" || attempt >= MAX_TRANSPORT_RETRIES) throw error;
-      await sleep(500 * 2 ** attempt, signal);
-      continue;
-    }
-    if (response.ok) return response.json();
-    const detail = (await response.text()).slice(0, 300);
-    if (!RETRIABLE_STATUS.has(response.status) || attempt >= MAX_TRANSPORT_RETRIES) {
-      throw new Error(`anthropic ${response.status}: ${detail}`);
-    }
-    await sleep(500 * 2 ** attempt, signal);
-  }
 }
 
 /**

@@ -33,10 +33,16 @@ export function callKey(prompt, opts) {
     system: opts.system ?? null,
     maxTokens: opts.maxTokens ?? null,
   };
-  return createHash("sha256")
-    .update(stableStringify({ prompt, semantic }))
-    .digest("hex")
-    .slice(0, 32);
+  return digest({ prompt, semantic });
+}
+
+/** The cache key for one judgment: the state, the question, and the judge model. */
+export function judgeKey(state, question, model) {
+  return digest({ judge: { state, question, model: model ?? null } });
+}
+
+function digest(value) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 32);
 }
 
 export class Journal {
