@@ -14,7 +14,7 @@
  *   the slowest single chain. A stage that throws drops that item to null and skips its
  *   remaining stages. Stage callbacks receive (previous, originalItem, index).
  *
- * Judgment (see decisions.js for feels/match/while built on it):
+ * Judgment (see decisions.js for feels/match built on it):
  * - judge(state, question) -> Promise<answer>: one typed question about a state, answered with
  *   calibrated probabilities by the run's judge (Jev, or a text model emulating Jev's contract
  *   through structured output). Unlike agent(), a judgment that cannot be obtained THROWS: null

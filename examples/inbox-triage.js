@@ -4,9 +4,10 @@
  * Every decision is a judgment with a threshold applied in code — the judge (Jev, or a text
  * model emulating it) decides, the text model writes, and this script ties them together.
  * `feels` asks whether the email needs an urgent reply and admits when it is unsure; `match`
- * routes the same email to one of four drafting prompts; `while` keeps rewriting the draft
- * until it stops feeling stiff; a final `feels` with a confidence gate either signs off, flags
- * uncertainty, or triggers one more revision. It drafts a reply; it sends nothing.
+ * routes the same email to one of four drafting prompts; a plain loop over `feels` keeps
+ * rewriting the draft until it stops feeling stiff; a final `feels` with a confidence gate
+ * either signs off, flags uncertainty, or triggers one more revision. It drafts a reply; it
+ * sends nothing.
  *
  * Run:  node examples/run-inbox.js "the email text"
  */
@@ -48,21 +49,25 @@ export default async function inboxTriage(w) {
   let reply = await write(w, REPLY_PROMPTS[kind], email);
   if (reply === null) throw new Error("the drafting call failed — nothing to edit");
 
-  // Revise until the draft sounds like a person. Gated: only a confident "still stiff" earns
+  // Revise until the draft sounds like a person. Probably spells this `while`; in JavaScript it
+  // is a loop over `feels`: re-judge before every pass, stop at a bound, and decide what the
+  // bound means (here: keep the last draft). Gated, so only a confident "still stiff" earns
   // another pass — an emulated judge hovering around 70% on an already-terse draft would
-  // otherwise spend the whole iteration budget rewriting the same sentence.
-  reply = await w.while(
-    reply,
-    "stiff, corporate, or unnecessarily wordy",
-    (current) =>
-      write(
-        w,
-        "Make this brief and natural. Preserve its meaning and questions. Add no new facts or" +
-          " commitments.",
-        current,
-      ),
-    { confidence: 0.8 },
-  );
+  // otherwise spend the whole budget rewriting the same sentence.
+  for (let pass = 0; pass < 5; pass += 1) {
+    const stiff = await w.feels(reply, "stiff, corporate, or unnecessarily wordy", {
+      confidence: 0.8,
+    });
+    if (!stiff) break;
+    const next = await write(
+      w,
+      "Make this brief and natural. Preserve its meaning and questions. Add no new facts or" +
+        " commitments.",
+      reply,
+    );
+    if (next === null) throw new Error("a rewrite failed — the draft is not finished");
+    reply = next;
+  }
 
   // A last check can admit uncertainty.
   const clear = await w.feels(reply, "polite and clear about the next step", { confidence: 0.8 });

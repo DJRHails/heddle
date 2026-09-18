@@ -2,9 +2,9 @@
  * The runner: execute a script file (or function) and return its return value.
  *
  * A script is an ordinary ES module exporting `default async function (w) { ... }`; it receives
- * the api object `{ agent, parallel, pipeline, judge, feels, match, while, args }` and whatever
- * it returns is run()'s result. Two model seams: `backend` writes (agent), `judge` decides
- * (feels/match/while); when no judge is given, the backend emulates one through structured
+ * the api object `{ agent, parallel, pipeline, judge, feels, match, args }` and whatever it
+ * returns is run()'s result. Two model seams: `backend` writes (agent), `judge` decides
+ * (feels/match); when no judge is given, the backend emulates one through structured
  * output. There is no sandbox: the script is trusted code running in-process with real stack
  * traces and a debugger that works (see README — node:vm is not a security boundary, so it
  * bought nothing but bare-realm footguns). Determinism guards are installed for the duration:

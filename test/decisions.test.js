@@ -100,39 +100,6 @@ describe("match", () => {
   });
 });
 
-describe("while", () => {
-  it("re-judges before every iteration and returns the first value that stops feeling true", async () => {
-    // Each rewrite appends "!"; the judge says "still jargon" until two rewrites have landed.
-    const { judge, requests } = yesProbabilityJudge({ draft: 0.9, "draft!": 0.8, "draft!!": 0.1 });
-    const steps = [];
-    const script = async (w) =>
-      w.while("draft", "full of corporate jargon", async (current, i) => {
-        steps.push([current, i]);
-        return w.agent(current).then((echoed) => `${echoed.slice("echo:".length)}!`);
-      });
-    await expect(run(script, { backend: echoBackend, judge })).resolves.toBe("draft!!");
-    expect(steps).toEqual([["draft", 0], ["draft!", 1]]);
-    expect(requests.map((r) => r.state)).toEqual(["draft", "draft!", "draft!!"]);
-  });
-
-  it("throws when the description still feels true after maxIterations", async () => {
-    const { judge } = scriptedJudge(() => ({ type: "noul", noul: 0.95 }));
-    const script = async (w) => w.while("x", "wordy", (current) => `${current}.`, { maxIterations: 3 });
-    await expect(run(script, { backend: echoBackend, judge })).rejects.toThrow(
-      /still feels true after 3 iterations/,
-    );
-  });
-
-  it("throws when a step returns null — a failed rewrite is not a finished one", async () => {
-    const { judge } = scriptedJudge(() => ({ type: "noul", noul: 0.95 }));
-    const failing = async () => {
-      throw new Error("model down");
-    };
-    const script = async (w) => w.while("x", "wordy", (current) => w.agent(`rewrite ${current}`));
-    await expect(run(script, { backend: failing, judge })).rejects.toThrow(/step returned null/);
-  });
-});
-
 describe("judgments in the scheduler", () => {
   it("are journaled with kind 'judge' and replayed on resume", async () => {
     const dir = mkdtempSync(join(tmpdir(), "heddle-"));

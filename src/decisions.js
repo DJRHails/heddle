@@ -2,9 +2,11 @@
  * Decision primitives: fuzzy control flow whose branches are still plain code.
  *
  * Borrowed from Probably (a toy language over Jev): `feels` asks a yes/no question, `match`
- * routes between descriptions, `while` keeps rewriting until something stops feeling true.
- * Each is one judgment — a typed question answered with calibrated probabilities — plus a
- * threshold applied in code. The judge decides; a text model writes; the script ties them.
+ * routes between descriptions. Each is one judgment — a typed question answered with calibrated
+ * probabilities — plus a threshold applied in code. The judge decides; a text model writes; the
+ * script ties them. Probably's third keyword, `while`, is not a primitive here: a script is
+ * JavaScript, so "keep rewriting until it stops feeling stiff" is a plain loop over `feels`,
+ * with the bound and what to do at it (keep the last draft, or throw) decided by the author.
  *
  * - feels(state, description, {confidence}) -> true | false | null. The higher of p(yes) and
  *   p(no) wins (a tie is yes). With a confidence threshold, a winner below it is null —
@@ -13,10 +15,6 @@
  * - match(state, criteria, {confidence}) -> the winning label, or null when its probability is
  *   below the threshold (default 0: the best fit wins even when nothing fits well, so include an
  *   "other" label when that matters). Route on the label with a plain `switch`.
- * - while(value, description, step, {maxIterations, confidence}) -> the first value for which
- *   the description stops feeling true. Re-judges before every iteration including the last;
- *   throws if still true after maxIterations (default 5), and throws if a step returns null —
- *   a dead rewrite must not read as a finished one.
  *
  * Null here means "the judge is unsure", never "the judge failed": infrastructure failures
  * throw (see judge in primitives.js). No sampling ("chaos") mode: it would need a random draw,
@@ -87,31 +85,5 @@ export function makeDecisions(judge) {
     return chosen;
   }
 
-  async function whileFeels(value, description, step, { maxIterations = 5, confidence } = {}) {
-    if (typeof step !== "function") {
-      throw new TypeError("while(value, description, step): step must be (current, i) => next");
-    }
-    if (!Number.isInteger(maxIterations) || maxIterations < 1) {
-      throw new TypeError(`while: maxIterations must be a positive integer, got ${maxIterations}`);
-    }
-    let current = value;
-    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-      const still = await feels(current, description, confidence === undefined ? {} : { confidence });
-      if (!still) return current; // false, or null (unsure) — only a confident yes continues
-      const next = await step(current, iteration);
-      if (next === null || next === undefined) {
-        throw new Error(
-          `while: step returned ${next} at iteration ${iteration + 1} — a failed rewrite must` +
-            " not read as a finished one",
-        );
-      }
-      current = next;
-    }
-    throw new Error(
-      `while: "${description}" still feels true after ${maxIterations} iterations — raise` +
-        " maxIterations or change the step",
-    );
-  }
-
-  return { feels, match, while: whileFeels };
+  return { feels, match };
 }

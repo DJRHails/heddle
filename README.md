@@ -34,7 +34,7 @@ about a state, answered with probabilities, thresholded in code:
 ```js
 if (await w.feels(email, "needs a reply urgently", { confidence: 0.8 })) { … }   // true | false | null (unsure)
 switch (await w.match(email, ["a bug report", "a feature request", "something else"])) { … }
-draft = await w.while(draft, "full of corporate jargon", (d) => w.agent(`Rewrite plainly:\n${d}`));
+while (await w.feels(draft, "full of corporate jargon", { confidence: 0.8 })) { draft = await rewrite(draft); }
 ```
 
 ## Design review (what this is, and what it deliberately is not)
@@ -110,21 +110,21 @@ The verdict: build the ~600-line library, not a framework. One runtime dependenc
 - `parallel` takes thunks, not promises — a promise is already running and unthrottleable, and
   the mistake is silent, so passing one is a loud `TypeError`.
 - Backstops: a concurrency cap from `availableParallelism()`, and a hard total-agent cap
-  (default 1000) so a budget-driven `while` loop cannot run away.
+  (default 1000) so a judgment-driven rewrite loop cannot run away.
 
-## Decisions: `feels`, `match`, `while`, and the judge seam
+## Decisions: `feels`, `match`, and the judge seam
 
 Borrowed from [Probably](https://probably-lang.southpolesteve.workers.dev), a toy language over
 [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev): `feels` asks a yes/no
-question, `match` routes between descriptions, `while` keeps going until something stops
-feeling true. Jev is the interesting part. It does not generate text; it answers typed
+question, `match` routes between descriptions, and its `while` keeps going until something
+stops feeling true. Jev is the interesting part. It does not generate text; it answers typed
 questions — **noul** (yes/no), **choice** (one of your labels), **score** (a rubric level) —
 with calibrated probabilities, in one parallel pass, constrained to your options by
 construction. That is exactly the shape of a decision leaf in an orchestration script: no
 parsing, no schema retries, no hallucinated labels, and a probability you can threshold.
 
 So a run has two model seams. `backend` writes (`agent`); `judge` decides (`judge`, `feels`,
-`match`, `while`). Two judges ship:
+`match`). Two judges ship:
 
 - `jevJudge({ apiKey, model? })` — Jev over its HTTP API (`POST /v1/systemone`). Pin a versioned
   model id once you have tuned thresholds; the `jev-latest` alias moves.
@@ -150,17 +150,28 @@ Rules the primitives follow, and why:
   **throws** — a script cannot route on no decision, and spelling infrastructure failure the same
   way as "the model is unsure" would break the null-is-not-a-finding rule above. Inside
   `parallel`/`pipeline` the throw isolates to that item like any other.
-- **`while` is bounded and re-judges before every iteration, including after the last
-  rewrite.** Still true after `maxIterations` (default 5) → it throws, naming the description.
-  A step that returns `null` (a dead agent) throws too: a failed rewrite must not read as a
-  finished one. Pass `{confidence}` so only a *confident* "still true" earns another pass; the
-  first live run of the example spent all five iterations on a one-sentence decline the
-  emulated judge kept rating ~70 % "stiff" while the rewrite converged to the same sentence.
+- **Probably's `while` is not a primitive; it is a loop.** A script is JavaScript, so "rewrite
+  until it stops feeling stiff" is `feels` in a loop condition, and the things a primitive would
+  have to be opinionated about — the bound, whether hitting it throws or keeps the last draft,
+  what a `null` rewrite means — stay the author's call, next to the code they affect:
+
+  ```js
+  for (let pass = 0; pass < 5; pass += 1) {
+    if (!(await w.feels(draft, "stiff or wordy", { confidence: 0.8 }))) break;
+    const next = await w.agent(`Make this brief and natural:\n${draft}`);
+    if (next === null) throw new Error("rewrite failed"); // a dead agent is not a finished draft
+    draft = next;
+  }
+  ```
+
+  Gate the condition so only a *confident* "still true" earns another pass: the first live run
+  of the example spent five passes on a one-sentence decline the emulated judge kept rating
+  ~70 % "stiff" while the rewrite converged to the same sentence.
 - **No sampling mode (Probably's `chaos`).** It needs a random draw, which the determinism
   guards forbid for good reason; pass a seed through `args` and sample in plain code if you want
   it.
 - Judgments share the scheduler with agents: the journal, the total-call cap (`maxAgents`
-  counts both — a `while` is precisely the loop that could run away), the concurrency ceiling,
+  counts both — a rewrite loop is precisely the loop that could run away), the concurrency ceiling,
   and the abort race.
 
 ## API
@@ -175,10 +186,8 @@ Rules the primitives follow, and why:
 - `w.feels(state, description, { confidence? = 0.5 })` → `true | false | null` (unsure).
 - `w.match(state, labels | { label: description }, { confidence? = 0 })` → the winning label,
   or `null` under the gate. Route on it with a plain `switch`.
-- `w.while(value, description, step, { maxIterations? = 5, confidence? })` → the first value
-  for which the description stops feeling true; `step(current, i)` produces the next value.
 - `w.judge(state, question)` → the raw Jev-shaped answer for one `{type: "noul" | "choice" |
-  "score", instructions, criteria}` question — the leaf the three above are built on, and the
+  "score", instructions, criteria}` question — the leaf the two above are built on, and the
   way to a `score` (`{score, legend, probabilities, confidence}`).
 - Backends are plain async functions `({prompt, system, schema, model, maxTokens, signal}) →
   result`; `anthropicBackend` drives the Messages API directly (fetch, zero SDK). The Agent SDK
@@ -203,7 +212,7 @@ new calls and returns byte-identical output).
 
 [`examples/inbox-triage.js`](examples/inbox-triage.js) — Probably's inbox department, ported:
 `feels` triages urgency and may say "unsure", `match` routes the email to one of four drafting
-prompts, `while` rewrites until the draft stops feeling stiff, a gated `feels` signs off or
+prompts, a loop over `feels` rewrites until the draft stops feeling stiff, a gated `feels` signs off or
 revises once more, and the subject is written from the finished reply. It drafts; it sends
 nothing.
 
@@ -212,26 +221,38 @@ ANTHROPIC_API_KEY=... node examples/run-inbox.js "the email text"          # Hai
 ANTHROPIC_API_KEY=... JEV_API_KEY=... node examples/run-inbox.js "…"        # Jev judges
 ```
 
+`JEV_API_KEY` is kept in `.env.shared`, encrypted at rest by glassine (a sops-backed git
+filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for your key,
+`set -a; . ./.env.shared; set +a` loads it.
+
 ## Validation
 
-- `npm test` — 30 tests against stub backends and judges. Primitives: pipeline interleaving
+- `npm test` — 27 tests against stub backends and judges. Primitives: pipeline interleaving
   proven by advancing one item to stage 3 while another's stage-1 call is still pending;
   `parallel` null-on-failure without rejection; thunks-vs-promises `TypeError`; determinism
   guards throwing (and restoring); resume replaying unchanged calls and re-running only the
   edited one; failed calls re-running on resume; per-occurrence replay of byte-identical
   repeats; the call cap; abort unwinding in-flight calls; the concurrency ceiling. Decisions:
   `feels` three-way under a threshold and tie-is-yes; `match` from labels and from
-  descriptions, gated to null, refusing one label; `while` re-judging before every iteration,
-  throwing after `maxIterations` and on a null step; judgments journaled as `kind: "judge"`,
+  descriptions, gated to null, refusing one label; judgments journaled as `kind: "judge"`,
   replayed on resume, re-judged under a different judge model, counted against the cap; the
   default judge emulated over the backend. Judges: `llmJudge` building one schema per request,
   deriving Jev-shaped answers (argmax, expected-value score, legend), rescaling, first-label
   ties, rejecting zero mass and prose; `jevJudge` posting the documented request shape with a
-  bearer token, retrying 529, failing 422 loudly (mocked fetch — no Jev key was available).
+  bearer token, retrying 529, failing 422 loudly (mocked fetch).
 - Live runs of the adversarial review (Haiku 4.5 over the Messages API): 70 agent calls
   journaled, 16 deduped claims adjudicated by 3-vote panels, full-replay rerun identical.
 - Live runs of the inbox triage with Haiku as both writer and emulated judge: an invitation
   routed at 0.95, urgency "unsure" (p(yes) 0.25 under a 0.8 gate), 6 calls journaled, replay
-  rerun byte-identical with zero new calls; a sales pitch routed correctly, then hit the
-  `while` 5-iteration backstop (judge ~0.72 "stiff" on a one-sentence decline), and after gating
-  the loop at 0.8 the resumed run replayed the recorded judgments and finished with 2 new calls.
+  rerun byte-identical with zero new calls; a sales pitch routed correctly, then spent the
+  rewrite loop's five passes on a one-sentence decline (judge ~0.72 "stiff" every pass), and
+  after gating the loop at 0.8 the resumed run replayed the recorded judgments and finished
+  with 2 new calls.
+- Live runs of the same two emails with **Jev deciding** (`jev-latest`, served as `jev-1.13.0`)
+  and Haiku writing, on the same journal: the routes agreed with the emulation, so every agent
+  call replayed and each run cost 4 judgments and about 2 s. Jev was sharper than the
+  emulation: urgency p(yes) 0.18 and 0.14 (a confident "normal" where Haiku's 0.25 was
+  "unsure" under the 0.8 gate), routing at 1.00 and 0.99, the one-sentence decline 0.62
+  "stiff" (Haiku 0.72 — both under the gate, so neither rewrites), and 0.76 "polite and clear
+  about the next step", which the gate reports as "unsure" — a fair verdict on a flat decline.
+  Replay rerun byte-identical, zero new calls.
