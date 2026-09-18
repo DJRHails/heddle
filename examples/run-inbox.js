@@ -6,7 +6,8 @@
  *
  * With JEV_API_KEY set the decisions go to Jev and only the writing goes to Anthropic; without
  * it, Haiku plays judge too through structured output. The journal lands next to this file and
- * records which judge answered, so the two can be diffed on the same email.
+ * records which judge answered, so the two can be diffed on the same email. JEV_API_KEY lives
+ * in the repo's glassine-encrypted .env.shared (`set -a; . ./.env.shared; set +a`).
  */
 
 import { run } from "../src/index.js";
