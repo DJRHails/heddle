@@ -6,16 +6,21 @@
  * call is a terminal error (the agent resolves null; the journal records why).
  */
 
-import { Ajv } from "ajv";
+import { Ajv, type ValidateFunction } from "ajv";
+
+import type { JsonSchema } from "./types.ts";
 
 const ajv = new Ajv({ allErrors: true, strict: false });
-const compiled = new Map();
+const compiled = new Map<string, ValidateFunction>();
 
 /** Validate `payload` against `schema`. Returns null when valid, else a readable error string. */
-export function schemaErrors(schema, payload) {
+export function schemaErrors(schema: JsonSchema, payload: unknown): string | null {
   const key = JSON.stringify(schema);
-  if (!compiled.has(key)) compiled.set(key, ajv.compile(schema));
-  const validate = compiled.get(key);
+  let validate = compiled.get(key);
+  if (!validate) {
+    validate = ajv.compile(schema);
+    compiled.set(key, validate);
+  }
   if (validate(payload)) return null;
   return (validate.errors ?? [])
     .map((error) => `${error.instancePath || "(root)"} ${error.message}`)

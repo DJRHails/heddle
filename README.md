@@ -1,26 +1,28 @@
 # heddle
 
-Deterministic multi-agent orchestration: an ordinary JavaScript script fans out LLM subagents,
+Deterministic multi-agent orchestration: an ordinary TypeScript script fans out LLM subagents,
 so all the control flow — loops, conditionals, fan-out, dedup, voting, kill thresholds — is
 real code, and only the leaf calls are model-driven. A heddle is the loom part that lifts
 selected warp threads so the shuttle can pass: the orchestrator decides which strands lift;
 the model is the shuttle.
 
-```js
-// script.js — an ordinary ES module; no registry, no metadata block
-export default async function (w) {
-  const angles = await w.agent("Decompose: …", { schema: ANGLES });
-  const found = await w.parallel(angles.map((a) => () => w.agent(`Search ${a}`, { schema: CLAIMS })));
+```ts
+// script.ts — an ordinary ES module; no registry, no metadata block
+import type { Workflow } from "heddle";
+
+export default async function (w: Workflow<{ question: string }>) {
+  const angles = await w.agent<{ angles: string[] }>("Decompose: …", { schema: ANGLES });
+  const found = await w.parallel(angles.map((a) => () => w.agent<Claims>(`Search ${a}`, { schema: CLAIMS })));
   const deduped = dedupeInPlainCode(found.filter(Boolean));       // a barrier, because dedup needs everything
   return w.pipeline(deduped, deepRead, votePanel, tally);          // no barrier: items flow independently
 }
 ```
 
-```js
+```ts
 import { run } from "heddle";
 import { anthropicBackend } from "heddle/backends/anthropic";
 
-const result = await run("./script.js", {
+const result = await run("./script.ts", {
   backend: anthropicBackend({ apiKey, defaultModel: "claude-haiku-4-5-20251001" }),
   journalPath: "./run.journal.jsonl",
   resume: true,
@@ -31,7 +33,7 @@ const result = await run("./script.js", {
 The leaves that *write* are agents. The leaves that *decide* are judgments — a typed question
 about a state, answered with probabilities, thresholded in code:
 
-```js
+```ts
 if (await w.feels(email, "needs a reply urgently", { confidence: 0.8 })) { … }   // true | false | null (unsure)
 switch (await w.match(email, ["a bug report", "a feature request", "something else"])) { … }
 while (await w.feels(draft, "full of corporate jargon", { confidence: 0.8 })) { draft = await rewrite(draft); }
@@ -150,12 +152,12 @@ Rules the primitives follow, and why:
   **throws** — a script cannot route on no decision, and spelling infrastructure failure the same
   way as "the model is unsure" would break the null-is-not-a-finding rule above. Inside
   `parallel`/`pipeline` the throw isolates to that item like any other.
-- **Probably's `while` is not a primitive; it is a loop.** A script is JavaScript, so "rewrite
+- **Probably's `while` is not a primitive; it is a loop.** A script is TypeScript, so "rewrite
   until it stops feeling stiff" is `feels` in a loop condition, and the things a primitive would
   have to be opinionated about — the bound, whether hitting it throws or keeps the last draft,
   what a `null` rewrite means — stay the author's call, next to the code they affect:
 
-  ```js
+  ```ts
   for (let pass = 0; pass < 5; pass += 1) {
     if (!(await w.feels(draft, "stiff or wordy", { confidence: 0.8 }))) break;
     const next = await w.agent(`Make this brief and natural:\n${draft}`);
@@ -176,49 +178,59 @@ Rules the primitives follow, and why:
 
 ## API
 
+Everything is typed: a script takes `Workflow<Args>` and the types below are exported from
+`heddle`. The runtime checks stay, because a script may still be plain JavaScript — Node 22.18+
+strips types natively, so `node script.ts` needs no build step, and the package ships `dist/`
+(built by `tsc`, with declarations) for consumers.
+
 - `run(scriptPathOrFn, { backend, judge?, journalPath?, resume?, signal?, maxAgents?, concurrency?, args? })`
-  → the script's return value. `judge` defaults to `llmJudge(backend)`.
-- `w.agent(prompt, { schema?, system?, model?, maxTokens? })` → structured object (with schema)
-  or final text; `null` on terminal failure (journaled).
+  → the script's return value (typed when given the function; `unknown` from a path). `judge`
+  defaults to `llmJudge(backend)`.
+- `w.agent(prompt, { system?, model?, maxTokens? })` → the final text, or `null` on terminal
+  failure (journaled). `w.agent<T>(prompt, { schema, … })` → `T | null`: the schema guarantees
+  the shape and `T` names it.
 - `w.parallel(thunks)` → array with `null` for failures; never rejects (except abort).
 - `w.pipeline(items, ...stages)` → per-item chains, no cross-stage barrier; stage callbacks get
-  `(previous, originalItem, index)`.
+  `(previous, originalItem, index)`, with `previous` typed from the stage before (up to four
+  stages; beyond that it is `unknown`).
 - `w.feels(state, description, { confidence? = 0.5 })` → `true | false | null` (unsure).
-- `w.match(state, labels | { label: description }, { confidence? = 0 })` → the winning label,
-  or `null` under the gate. Route on it with a plain `switch`.
-- `w.judge(state, question)` → the raw Jev-shaped answer for one `{type: "noul" | "choice" |
-  "score", instructions, criteria}` question — the leaf the two above are built on, and the
-  way to a `score` (`{score, legend, probabilities, confidence}`).
-- Backends are plain async functions `({prompt, system, schema, model, maxTokens, signal}) →
-  result`; `anthropicBackend` drives the Messages API directly (fetch, zero SDK). The Agent SDK
-  drops in behind the same signature when tool-using subagents are needed.
-- Judges are plain async functions `({state, questions, signal}) → {answers}` in Jev's request
-  and answer shapes, with a `.model` property that enters the journal key: `jevJudge` and
-  `llmJudge` (`heddle/judges/jev`, `heddle/judges/llm`).
+- `w.match(state, labels | { label: description }, { confidence? = 0 })` → the winning label
+  (typed as the union of the labels you passed), or `null` under the gate. Route on it with a
+  plain `switch`.
+- `w.judge(state, question)` → the raw Jev-shaped answer for one `Question` (`{type: "noul" |
+  "choice" | "score", instructions, criteria}`) — the leaf the two above are built on, and the
+  way to a `score` (`{score, legend, probabilities, confidence}`). The answer type follows the
+  question type (`AnswerFor<Q>`).
+- Backends (`Backend`) are plain async functions `({prompt, system, schema, model, maxTokens,
+  signal}) → result`; `anthropicBackend` drives the Messages API directly (fetch, zero SDK).
+  The Agent SDK drops in behind the same signature when tool-using subagents are needed.
+- Judges (`Judge`) are plain async functions `({state, questions, signal}) → {answers}` in
+  Jev's request and answer shapes, with a `.model` property that enters the journal key:
+  `jevJudge` and `llmJudge` (`heddle/judges/jev`, `heddle/judges/llm`).
 
 ## Worked example
 
-[`examples/adversarial-review.js`](examples/adversarial-review.js) — decompose a question into
+[`examples/adversarial-review.ts`](examples/adversarial-review.ts) — decompose a question into
 angles, fan out searchers, **dedup claims in plain code** (the one legitimate barrier),
 deep-read each survivor, run a 3-vote refutation panel per claim, tally with three outcomes,
-synthesize only what survived. Run it live:
+synthesize only what survived. Run it live (Node 22.18+ runs the `.ts` directly):
 
 ```sh
-ANTHROPIC_API_KEY=... node examples/run-live.js "your research question"
+ANTHROPIC_API_KEY=... node examples/run-live.ts "your research question"
 ```
 
 The journal lands next to the example; re-running replays it (verified: a second run makes zero
 new calls and returns byte-identical output).
 
-[`examples/inbox-triage.js`](examples/inbox-triage.js) — Probably's inbox department, ported:
+[`examples/inbox-triage.ts`](examples/inbox-triage.ts) — Probably's inbox department, ported:
 `feels` triages urgency and may say "unsure", `match` routes the email to one of four drafting
 prompts, a loop over `feels` rewrites until the draft stops feeling stiff, a gated `feels` signs off or
 revises once more, and the subject is written from the finished reply. It drafts; it sends
 nothing.
 
 ```sh
-ANTHROPIC_API_KEY=... node examples/run-inbox.js "the email text"          # Haiku judges too
-ANTHROPIC_API_KEY=... JEV_API_KEY=... node examples/run-inbox.js "…"        # Jev judges
+ANTHROPIC_API_KEY=... node examples/run-inbox.ts "the email text"          # Haiku judges too
+ANTHROPIC_API_KEY=... JEV_API_KEY=... node examples/run-inbox.ts "…"        # Jev judges
 ```
 
 `JEV_API_KEY` is kept in `.env.shared`, encrypted at rest by glassine (a sops-backed git
@@ -227,6 +239,9 @@ filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for y
 
 ## Validation
 
+- `npm run check` — `tsc --noEmit` over `src`, `test` and `examples` (strict, with
+  `noUncheckedIndexedAccess` and `erasableSyntaxOnly`, so every file also runs under Node's
+  type stripping), `oxlint`, then the tests. `npm run build` emits `dist/` with declarations.
 - `npm test` — 27 tests against stub backends and judges. Primitives: pipeline interleaving
   proven by advancing one item to stage 3 while another's stage-1 call is still pending;
   `parallel` null-on-failure without rejection; thunks-vs-promises `TypeError`; determinism
@@ -256,3 +271,6 @@ filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for y
   "stiff" (Haiku 0.72 — both under the gate, so neither rewrites), and 0.76 "polite and clear
   about the next step", which the gate reports as "unsure" — a fair verdict on a flat decline.
   Replay rerun byte-identical, zero new calls.
+- The TypeScript port is journal-compatible: run from `.ts` source under Node's type stripping,
+  the inbox example replayed all 29 calls the JavaScript version had journaled (Haiku and Jev
+  runs alike) with zero new calls, and a fresh scheduling email then ran live end to end.

@@ -14,7 +14,7 @@
  *   the slowest single chain. A stage that throws drops that item to null and skips its
  *   remaining stages. Stage callbacks receive (previous, originalItem, index).
  *
- * Judgment (see decisions.js for feels/match built on it):
+ * Judgment (see decisions.ts for feels/match built on it):
  * - judge(state, question) -> Promise<answer>: one typed question about a state, answered with
  *   calibrated probabilities by the run's judge (Jev, or a text model emulating Jev's contract
  *   through structured output). Unlike agent(), a judgment that cannot be obtained THROWS: null
@@ -27,26 +27,62 @@
  * null finding.
  */
 
-import { makeDecisions } from "./decisions.js";
-import { realClock } from "./determinism.js";
-import { callKey, judgeKey } from "./journal.js";
+import { makeDecisions } from "./decisions.ts";
+import { realClock } from "./determinism.ts";
+import { callKey, judgeKey, type Journal, type JournalRecord } from "./journal.ts";
+import type {
+  AgentOptions,
+  AnswerFor,
+  Backend,
+  Judge,
+  Question,
+  Stage,
+  Thunk,
+  Workflow,
+} from "./types.ts";
 
-export function isAbortError(error) {
+export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-function abortError() {
+function abortError(): Error {
   const error = new Error("run aborted");
   error.name = "AbortError";
   return error;
 }
 
-export function makeApi({ backend, judge, journal, signal, maxAgents, concurrency, args }) {
+function errorName(error: unknown): string | undefined {
+  return error instanceof Error ? error.name : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export interface SchedulerOptions<Args> {
+  backend: Backend;
+  judge: Judge;
+  journal: Journal;
+  signal?: AbortSignal;
+  maxAgents: number;
+  concurrency: number;
+  args: Args;
+}
+
+export function makeApi<Args>({
+  backend,
+  judge,
+  journal,
+  signal,
+  maxAgents,
+  concurrency,
+  args,
+}: SchedulerOptions<Args>): Workflow<Args> {
   let inFlight = 0;
   let launched = 0;
-  const waiters = [];
+  const waiters: Array<() => void> = [];
 
-  function acquire() {
+  function acquire(): Promise<void> {
     if (inFlight < concurrency) {
       inFlight += 1;
       return Promise.resolve();
@@ -54,7 +90,7 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
     return new Promise((resolveWaiter) => waiters.push(resolveWaiter));
   }
 
-  function release() {
+  function release(): void {
     const next = waiters.shift();
     if (next) {
       next(); // the slot transfers; inFlight is unchanged
@@ -64,15 +100,15 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
   }
 
   /** Race a call against the abort signal so an in-flight call cannot outlive an abort. */
-  function raceAbort(call) {
+  function raceAbort<T>(call: Promise<T>): Promise<T> {
     if (!signal) return call;
     return Promise.race([
       call,
-      new Promise((_, rejectRace) =>
+      new Promise<never>((_, rejectRace) =>
         signal.addEventListener(
           "abort",
           () => {
-            Promise.resolve(call).catch(() => {}); // silence the loser
+            call.catch(() => {}); // silence the loser
             rejectRace(abortError());
           },
           { once: true },
@@ -87,7 +123,11 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
    * (journaled as status "error"); callers decide whether that becomes null or propagates.
    * `record` is the journal entry's descriptive part (what was asked, and of whom).
    */
-  async function settle(key, record, call) {
+  async function settle(
+    key: string,
+    record: JournalRecord,
+    call: () => Promise<unknown>,
+  ): Promise<unknown> {
     const occurrence = journal.nextOccurrence(key);
     const cached = journal.replay(key, occurrence);
     if (cached !== undefined) return cached.result;
@@ -122,7 +162,7 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
           occurrence,
           ...record,
           status: "error",
-          error: String(error?.message ?? error),
+          error: errorMessage(error),
           ms: realClock.now() - started,
         });
       }
@@ -132,20 +172,22 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
     }
   }
 
-  async function agent(prompt, opts = {}) {
+  async function agent(prompt: string, opts: AgentOptions = {}): Promise<unknown> {
     if (typeof prompt !== "string" || !prompt.trim()) {
       throw new TypeError("agent(prompt, opts): prompt must be a non-empty string");
     }
-    const record = { kind: "agent", prompt, opts: { ...opts } };
+    const record: JournalRecord = { kind: "agent", prompt, opts: { ...opts } };
     try {
-      return await settle(callKey(prompt, opts), record, () => backend({ ...opts, prompt, signal }));
+      return await settle(callKey(prompt, opts), record, () =>
+        backend({ ...opts, prompt, signal }),
+      );
     } catch (error) {
-      if (isAbortError(error) || error?.name === "CapError") throw error;
+      if (isAbortError(error) || errorName(error) === "CapError") throw error;
       return null; // terminal failure: the caller filters; the journal has the story
     }
   }
 
-  async function judgeOne(state, question) {
+  async function judgeOne<Q extends Question>(state: unknown, question: Q): Promise<AnswerFor<Q>> {
     if (state === undefined) {
       throw new TypeError("judge(state, question): state is required (a string or JSON value)");
     }
@@ -154,28 +196,29 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
         'judge(state, question): question must be {type: "noul" | "choice" | "score", ...}',
       );
     }
-    const record = { kind: "judge", state, question, model: judge.model ?? null };
+    const record: JournalRecord = { kind: "judge", state, question, model: judge.model ?? null };
     const key = judgeKey(state, question, judge.model);
-    const response = await settle(key, record, () =>
+    const response = (await settle(key, record, () =>
       judge({ state, questions: { q: question }, signal }),
-    );
+    )) as { answers?: Record<string, { type?: string }> } | null | undefined;
     const answer = response?.answers?.q;
     if (!answer || answer.type !== question.type) {
       throw new Error(
         `judge returned no ${question.type} answer — got ${JSON.stringify(response).slice(0, 200)}`,
       );
     }
-    return answer;
+    return answer as AnswerFor<Q>;
   }
 
-  async function parallel(thunks) {
+  async function parallel<T>(thunks: ReadonlyArray<Thunk<T>>): Promise<Array<Awaited<T> | null>> {
     if (!Array.isArray(thunks)) {
       throw new TypeError("parallel(thunks): expected an array of () => Promise");
     }
     for (const [index, thunk] of thunks.entries()) {
       if (typeof thunk === "function") continue;
+      const promiseLike = thunk as { then?: unknown } | null;
       const hint =
-        thunk && typeof thunk.then === "function"
+        promiseLike && typeof promiseLike.then === "function"
           ? "item is a promise — already running and unthrottleable; wrap it: () => yourCall()"
           : `item is ${typeof thunk}`;
       throw new TypeError(
@@ -194,7 +237,10 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
     );
   }
 
-  async function pipeline(items, ...stages) {
+  async function pipeline<A>(
+    items: readonly A[],
+    ...stages: Array<Stage<unknown, A, unknown>>
+  ): Promise<unknown[]> {
     if (!Array.isArray(items)) {
       throw new TypeError("pipeline(items, ...stages): expected an array of items");
     }
@@ -205,7 +251,7 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
     }
     return Promise.all(
       items.map(async (item, index) => {
-        let value = item;
+        let value: unknown = item;
         for (const stage of stages) {
           try {
             value = await stage(value, item, index);
@@ -219,5 +265,15 @@ export function makeApi({ backend, judge, journal, signal, maxAgents, concurrenc
     );
   }
 
-  return { agent, parallel, pipeline, judge: judgeOne, ...makeDecisions(judgeOne), args };
+  return {
+    // The Workflow overloads say what the backend returns for each call shape (text without a
+    // schema, the schema's payload with one, per-stage types through a pipeline); the
+    // implementations only know `unknown`, so they are asserted into the declared shapes here.
+    agent: agent as Workflow<Args>["agent"],
+    parallel,
+    pipeline: pipeline as Workflow<Args>["pipeline"],
+    judge: judgeOne,
+    ...makeDecisions(judgeOne),
+    args,
+  };
 }

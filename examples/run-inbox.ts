@@ -1,8 +1,8 @@
 /**
  * Live driver for the inbox-triage example.
  *
- *   ANTHROPIC_API_KEY=... node examples/run-inbox.js "the email text"
- *   ANTHROPIC_API_KEY=... JEV_API_KEY=... node examples/run-inbox.js "the email text"
+ *   ANTHROPIC_API_KEY=... node examples/run-inbox.ts "the email text"
+ *   ANTHROPIC_API_KEY=... JEV_API_KEY=... node examples/run-inbox.ts "the email text"
  *
  * With JEV_API_KEY set the decisions go to Jev and only the writing goes to Anthropic; without
  * it, Haiku plays judge too through structured output. The journal lands next to this file and
@@ -10,10 +10,10 @@
  * in the repo's glassine-encrypted .env.shared (`set -a; . ./.env.shared; set +a`).
  */
 
-import { run } from "../src/index.js";
-import { anthropicBackend } from "../src/backends/anthropic.js";
-import { jevJudge } from "../src/judges/jev.js";
-import { llmJudge } from "../src/judges/llm.js";
+import { run } from "../src/index.ts";
+import { anthropicBackend } from "../src/backends/anthropic.ts";
+import { jevJudge } from "../src/judges/jev.ts";
+import { llmJudge } from "../src/judges/llm.ts";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
@@ -28,11 +28,12 @@ const email =
     " interested? Cheers, Priya";
 
 const backend = anthropicBackend({ apiKey, defaultModel: "claude-haiku-4-5-20251001" });
-const judge = process.env.JEV_API_KEY
-  ? jevJudge({ apiKey: process.env.JEV_API_KEY })
+const jevApiKey = process.env.JEV_API_KEY;
+const judge = jevApiKey
+  ? jevJudge({ apiKey: jevApiKey })
   : llmJudge(backend, { model: "claude-haiku-4-5-20251001" });
 
-const result = await run(new URL("./inbox-triage.js", import.meta.url).pathname, {
+const result = await run(new URL("./inbox-triage.ts", import.meta.url).pathname, {
   backend,
   judge,
   journalPath: new URL("./inbox-triage.journal.jsonl", import.meta.url).pathname,

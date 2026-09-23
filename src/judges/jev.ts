@@ -13,21 +13,26 @@
  * journals and propagates — a decision that cannot be obtained is an error, not a null.
  */
 
-import { postJson } from "../backends/transport.js";
+import { postJson } from "../backends/transport.ts";
+import type { Judge, JudgeRequest, JudgeResponse } from "../types.ts";
 
 const API_URL = "https://api.typesafe.ai/v1/systemone";
 
-/**
- * @param {object} config
- * @param {string} config.apiKey  a TypeSafe API key.
- * @param {string} [config.model]  "jev-latest" (default) or a pinned id like "jev-1.13.0" —
- *   pin when you have tuned thresholds, since an alias moves under you.
- */
-export function jevJudge({ apiKey, model = "jev-latest" }) {
+export interface JevConfig {
+  /** A TypeSafe API key. */
+  apiKey: string;
+  /**
+   * "jev-latest" (default) or a pinned id like "jev-1.13.0" — pin when you have tuned
+   * thresholds, since an alias moves under you.
+   */
+  model?: string;
+}
+
+export function jevJudge({ apiKey, model = "jev-latest" }: JevConfig): Judge {
   if (!apiKey) throw new TypeError("jevJudge({apiKey}): apiKey is required");
 
-  async function judge({ state, questions, signal }) {
-    const reply = await postJson(API_URL, {
+  async function judge({ state, questions, signal }: JudgeRequest): Promise<JudgeResponse> {
+    const reply = await postJson<JudgeResponse | null>(API_URL, {
       headers: { authorization: `Bearer ${apiKey}` },
       body: { model, state, questions },
       signal,
@@ -38,6 +43,5 @@ export function jevJudge({ apiKey, model = "jev-latest" }) {
     }
     return reply;
   }
-  judge.model = model;
-  return judge;
+  return Object.assign(judge, { model });
 }
