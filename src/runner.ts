@@ -24,7 +24,7 @@ import type { Backend, Judge, Script } from "./types.ts";
 export interface RunOptions<Args = unknown> {
   /** Writes: the model call behind `agent`. Required. */
   backend: Backend;
-  /** Decides: `jevJudge` for Jev, or omit to emulate one over the backend (`llmJudge`). */
+  /** Decides: Jev's `judge` (`heddle/judges/jev`), or omit to emulate one over the backend (`llmJudge`). */
   judge?: Judge;
   /** JSONL journal; omit to journal nothing. */
   journalPath?: string;

@@ -12,7 +12,7 @@
 
 import { run } from "../src/index.ts";
 import { anthropicBackend } from "../src/backends/anthropic.ts";
-import { jevJudge } from "../src/judges/jev.ts";
+import { judge } from "../src/judges/jev.ts";
 import { llmJudge } from "../src/judges/llm.ts";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -29,13 +29,13 @@ const email =
 
 const backend = anthropicBackend({ apiKey, defaultModel: "claude-haiku-4-5-20251001" });
 const jevApiKey = process.env.JEV_API_KEY;
-const judge = jevApiKey
-  ? jevJudge({ apiKey: jevApiKey })
+const decider = jevApiKey
+  ? judge({ apiKey: jevApiKey })
   : llmJudge(backend, { model: "claude-haiku-4-5-20251001" });
 
 const result = await run(new URL("./inbox-triage.ts", import.meta.url).pathname, {
   backend,
-  judge,
+  judge: decider,
   journalPath: new URL("./inbox-triage.journal.jsonl", import.meta.url).pathname,
   resume: true,
   args: { email },

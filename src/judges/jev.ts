@@ -28,8 +28,8 @@ export interface JevConfig {
   model?: string;
 }
 
-export function jevJudge({ apiKey, model = "jev-latest" }: JevConfig): Judge {
-  if (!apiKey) throw new TypeError("jevJudge({apiKey}): apiKey is required");
+export function judge({ apiKey, model = "jev-latest" }: JevConfig): Judge {
+  if (!apiKey) throw new TypeError("judge({apiKey}): apiKey is required");
 
   async function judge({ state, questions, signal }: JudgeRequest): Promise<JudgeResponse> {
     const reply = await postJson<JudgeResponse | null>(API_URL, {

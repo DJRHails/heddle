@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { jevJudge } from "../src/judges/jev.ts";
+import { judge as jev } from "../src/judges/jev.ts";
 import { llmJudge } from "../src/judges/llm.ts";
 import type { Backend, BackendRequest, Question } from "../src/types.ts";
 
@@ -95,7 +95,7 @@ describe("llmJudge", () => {
   });
 });
 
-describe("jevJudge", () => {
+describe("judge (Jev)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   const reply = {
@@ -108,7 +108,7 @@ describe("jevJudge", () => {
   it("posts the Jev request shape with a bearer token and returns the reply", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(reply), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const judge = jevJudge({ apiKey: "test-key" });
+    const judge = jev({ apiKey: "test-key" });
     expect(judge.model).toBe("jev-latest");
 
     await expect(judge({ state: "Help!", questions })).resolves.toEqual(reply);
@@ -128,7 +128,7 @@ describe("jevJudge", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(reply), { status: 200 }))
       .mockResolvedValueOnce(new Response('{"detail":"bad question"}', { status: 422 }));
     vi.stubGlobal("fetch", fetchMock);
-    const judge = jevJudge({ apiKey: "k", model: "jev-1.13.0" });
+    const judge = jev({ apiKey: "k", model: "jev-1.13.0" });
     await expect(judge({ state: "x", questions })).resolves.toEqual(reply);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await expect(judge({ state: "x", questions })).rejects.toThrow(/jev 422: .*bad question/);

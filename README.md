@@ -128,7 +128,7 @@ parsing, no schema retries, no hallucinated labels, and a probability you can th
 So a run has two model seams. `backend` writes (`agent`); `judge` decides (`judge`, `feels`,
 `match`). Two judges ship:
 
-- `jevJudge({ apiKey, model? })` — Jev over its HTTP API (`POST /v1/systemone`). Pin a versioned
+- `judge({ apiKey, model? })` (`heddle/judges/jev`) — Jev over its HTTP API (`POST /v1/systemone`). Pin a versioned
   model id once you have tuned thresholds; the `jev-latest` alias moves.
 - `llmJudge(backend, { model? })` — Jev's contract emulated by a text model through heddle's
   schema-forced structured output: one call per judgment, a JSON Schema that admits only a
@@ -206,7 +206,7 @@ strips types natively, so `node script.ts` needs no build step, and the package 
   The Agent SDK drops in behind the same signature when tool-using subagents are needed.
 - Judges (`Judge`) are plain async functions `({state, questions, signal}) → {answers}` in
   Jev's request and answer shapes, with a `.model` property that enters the journal key:
-  `jevJudge` and `llmJudge` (`heddle/judges/jev`, `heddle/judges/llm`).
+  Jev's `judge` and the emulated `llmJudge` (`heddle/judges/jev`, `heddle/judges/llm`).
 
 ## Worked example
 
@@ -253,7 +253,7 @@ filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for y
   replayed on resume, re-judged under a different judge model, counted against the cap; the
   default judge emulated over the backend. Judges: `llmJudge` building one schema per request,
   deriving Jev-shaped answers (argmax, expected-value score, legend), rescaling, first-label
-  ties, rejecting zero mass and prose; `jevJudge` posting the documented request shape with a
+  ties, rejecting zero mass and prose; Jev's `judge` posting the documented request shape with a
   bearer token, retrying 529, failing 422 loudly (mocked fetch).
 - Live runs of the adversarial review (Haiku 4.5 over the Messages API): 70 agent calls
   journaled, 16 deduped claims adjudicated by 3-vote panels, full-replay rerun identical.

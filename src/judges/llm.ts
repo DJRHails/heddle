@@ -2,7 +2,7 @@
  * The emulated judge: Jev's contract, served by an ordinary text model through heddle's
  * schema-forced structured output.
  *
- * Same request and answer shapes as jevJudge, so scripts and thresholds are portable, with the
+ * Same request and answer shapes as the Jev `judge`, so scripts and thresholds are portable, with the
  * honest caveats: an LLM's self-reported probabilities are prompted estimates, not the output
  * of a model trained for calibration; the answer is constrained to the labels by the schema
  * (so no hallucinated options) but costs a full generation per judgment; and `confidence` here
