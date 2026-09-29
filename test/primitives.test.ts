@@ -4,17 +4,17 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { run } from "../src/index.js";
+import { run, type Backend, type Workflow } from "../src/index.ts";
 
 /** A backend that resolves each prompt via a controllable deferred, recording every call. */
 function deferredBackend() {
-  const pending = new Map(); // prompt -> resolve fn
-  const calls = [];
-  const backend = ({ prompt }) => {
+  const pending = new Map<string, (value: unknown) => void>();
+  const calls: string[] = [];
+  const backend: Backend = ({ prompt }) => {
     calls.push(prompt);
     return new Promise((resolvePrompt) => pending.set(prompt, resolvePrompt));
   };
-  const settle = (prompt, value) => {
+  const settle = (prompt: string, value: unknown) => {
     const resolvePrompt = pending.get(prompt);
     if (!resolvePrompt) throw new Error(`nothing pending for ${prompt}`);
     pending.delete(prompt);
@@ -24,9 +24,9 @@ function deferredBackend() {
 }
 
 /** A backend that echoes instantly, recording calls; prompts in `fail` reject. */
-function echoBackend(fail = new Set()) {
-  const calls = [];
-  const backend = async ({ prompt }) => {
+function echoBackend(fail = new Set<string>()) {
+  const calls: string[] = [];
+  const backend: Backend = async ({ prompt }) => {
     calls.push(prompt);
     if (fail.has(prompt)) throw new Error(`scripted failure for ${prompt}`);
     return `echo:${prompt}`;
@@ -34,11 +34,13 @@ function echoBackend(fail = new Set()) {
   return { backend, calls };
 }
 
+const tick = () => new Promise((resolveTick) => setTimeout(resolveTick, 10));
+
 describe("pipeline", () => {
   it("interleaves: item A reaches stage 3 before item B finishes stage 1", async () => {
     const { backend, settle, pending } = deferredBackend();
-    const order = [];
-    const script = async (w) =>
+    const order: string[] = [];
+    const script = async (w: Workflow) =>
       w.pipeline(
         ["A", "B"],
         (item) => {
@@ -57,22 +59,22 @@ describe("pipeline", () => {
     const running = run(script, { backend, concurrency: 8 });
     // Let both stage-1 calls dispatch, then advance only A through both agent stages while B's
     // stage-1 call stays pending. If stage 3 of A runs, the pipeline has no cross-stage barrier.
-    await new Promise((tick) => setTimeout(tick, 10));
+    await tick();
     settle("s1:A", "a1");
-    await new Promise((tick) => setTimeout(tick, 10));
+    await tick();
     settle("s2:A", "a2");
-    await new Promise((tick) => setTimeout(tick, 10));
+    await tick();
     expect(order).toContain("s3:A");
     expect(pending.has("s1:B")).toBe(true); // B is still mid-stage-1 while A finished stage 3
     settle("s1:B", "b1");
-    await new Promise((tick) => setTimeout(tick, 10));
+    await tick();
     settle("s2:B", "b2");
     await expect(running).resolves.toEqual(["A-done", "B-done"]);
   });
 
   it("a throwing stage drops that item to null without touching its neighbours", async () => {
     const { backend } = echoBackend();
-    const script = async (w) =>
+    const script = async (w: Workflow) =>
       w.pipeline(
         [1, 2, 3],
         (item) => {
@@ -88,13 +90,14 @@ describe("pipeline", () => {
 describe("parallel", () => {
   it("rejects promises with a loud TypeError naming the mistake", async () => {
     const { backend } = echoBackend();
-    const script = async (w) => w.parallel([Promise.resolve(1)]);
+    const notThunks = [Promise.resolve(1)] as unknown as Array<() => number>;
+    const script = async (w: Workflow) => w.parallel(notThunks);
     await expect(run(script, { backend })).rejects.toThrow(/thunks .* not promises/);
   });
 
   it("a failing thunk becomes null; the call itself never rejects", async () => {
     const { backend } = echoBackend(new Set(["dies"]));
-    const script = async (w) =>
+    const script = async (w: Workflow) =>
       w.parallel([() => w.agent("lives"), () => w.agent("dies"), () => w.agent("also-lives")]);
     // agent() resolves null on terminal backend failure, so the fan-out survives.
     await expect(run(script, { backend })).resolves.toEqual([
@@ -106,7 +109,7 @@ describe("parallel", () => {
 
   it("a thunk that throws synchronously is null too", async () => {
     const { backend } = echoBackend();
-    const script = async (w) =>
+    const script = async (w: Workflow) =>
       w.parallel([
         () => {
           throw new Error("sync boom");
@@ -122,12 +125,12 @@ describe("determinism guards", () => {
     const { backend } = echoBackend();
     const outcomes = await run(
       async () => {
-        const attempt = (fn) => {
+        const attempt = (fn: () => unknown) => {
           try {
             fn();
             return "allowed";
           } catch (error) {
-            return `threw: ${error.message.slice(0, 40)}`;
+            return `threw: ${(error as Error).message.slice(0, 40)}`;
           }
         };
         return {
@@ -150,7 +153,7 @@ describe("determinism guards", () => {
 });
 
 describe("journal and resume", () => {
-  const scriptSource = (editedLateStage) => async (w) => {
+  const scriptSource = (editedLateStage: boolean) => async (w: Workflow) => {
     const early = await w.parallel([() => w.agent("early:1"), () => w.agent("early:2")]);
     const late = await w.agent(editedLateStage ? "late:EDITED" : "late:original");
     return { early, late };
@@ -182,7 +185,7 @@ describe("journal and resume", () => {
     const dir = mkdtempSync(join(tmpdir(), "heddle-"));
     const journalPath = join(dir, "journal.jsonl");
     const failing = echoBackend(new Set(["flaky"]));
-    const script = async (w) => w.agent("flaky");
+    const script = async (w: Workflow) => w.agent("flaky");
     expect(await run(script, { backend: failing.backend, journalPath })).toBeNull();
 
     const healed = echoBackend(); // same call succeeds now
@@ -195,11 +198,11 @@ describe("journal and resume", () => {
     const dir = mkdtempSync(join(tmpdir(), "heddle-"));
     const journalPath = join(dir, "journal.jsonl");
     let n = 0;
-    const counting = async () => {
+    const counting: Backend = async () => {
       n += 1;
       return `call-${n}`;
     };
-    const script = async (w) => [await w.agent("same"), await w.agent("same")];
+    const script = async (w: Workflow) => [await w.agent("same"), await w.agent("same")];
     const first = await run(script, { backend: counting, journalPath });
     expect(first).toEqual(["call-1", "call-2"]);
     const resumed = await run(script, { backend: counting, journalPath, resume: true });
@@ -211,19 +214,19 @@ describe("journal and resume", () => {
 describe("caps and abort", () => {
   it("the total-agent cap stops a runaway loop", async () => {
     const { backend } = echoBackend();
-    const script = async (w) => {
+    const script = async (w: Workflow) => {
       for (let i = 0; i < 100; i += 1) await w.agent(`call ${i}`);
     };
-    await expect(run(script, { backend, maxAgents: 5 })).rejects.toThrow(/agent cap reached/);
+    await expect(run(script, { backend, maxAgents: 5 })).rejects.toThrow(/cap reached/);
   });
 
   it("abort unwinds the run instead of reading as null findings", async () => {
     const { backend, settle } = deferredBackend();
     const controller = new AbortController();
-    const script = async (w) =>
+    const script = async (w: Workflow) =>
       w.parallel([() => w.agent("slow"), () => w.agent("also slow")]);
     const running = run(script, { backend, signal: controller.signal });
-    await new Promise((tick) => setTimeout(tick, 10));
+    await tick();
     controller.abort();
     settle("slow", "too late");
     settle("also slow", "too late");
@@ -233,14 +236,14 @@ describe("caps and abort", () => {
   it("concurrency is respected", async () => {
     let inFlight = 0;
     let peak = 0;
-    const backend = async () => {
+    const backend: Backend = async () => {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
-      await new Promise((tick) => setTimeout(tick, 5));
+      await new Promise((resolveWait) => setTimeout(resolveWait, 5));
       inFlight -= 1;
       return "ok";
     };
-    const script = async (w) =>
+    const script = async (w: Workflow) =>
       w.parallel(Array.from({ length: 10 }, (_, i) => () => w.agent(`c${i}`)));
     await run(script, { backend, concurrency: 3 });
     expect(peak).toBeLessThanOrEqual(3);

@@ -18,7 +18,10 @@ const realNow = RealDate.now.bind(RealDate);
 /** The unpatched clock, for runtime bookkeeping (journal timings) while guards are installed. */
 export const realClock = { now: realNow };
 
-function deterministicViolation(what, fix) {
+/** This module's own frames, whether running from source (.ts) or from the build (.js). */
+const GUARD_FRAME = /determinism\.[jt]s/;
+
+function deterministicViolation(what: string, fix: string): Error {
   return new Error(
     `${what} is nondeterministic and would make journal replay unsound — ${fix}`,
   );
@@ -35,18 +38,18 @@ function deterministicViolation(what, fix) {
  * calls Date.now() would be exempted too, which is acceptable for trusted scripts whose own
  * control flow is what replay soundness depends on.
  */
-function calledFromPlatform() {
+function calledFromPlatform(): boolean {
   const stack = new Error().stack ?? "";
   const frames = stack.split("\n").slice(1); // drop the "Error" line
   for (const frame of frames) {
-    if (frame.includes("determinism.js")) continue; // the guard's own frames
+    if (GUARD_FRAME.test(frame)) continue; // the guard's own frames
     return frame.includes("node:internal");
   }
   return false;
 }
 
 /** Install the guards. Returns a restore function; always call it (try/finally). */
-export function installDeterminismGuards() {
+export function installDeterminismGuards(): () => void {
   Math.random = () => {
     if (calledFromPlatform()) return realMathRandom();
     throw deterministicViolation(
@@ -81,7 +84,7 @@ export function installDeterminismGuards() {
   });
   globalThis.Date = GuardedDate;
 
-  return function restore() {
+  return function restore(): void {
     Math.random = realMathRandom;
     globalThis.Date = RealDate;
   };

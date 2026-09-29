@@ -8,8 +8,10 @@
  * errored verifier (a null from agent()) is "no vote cast", never "refuted": infrastructure
  * failure must not read as a finding.
  *
- * Run:  node examples/run-live.js "your research question"
+ * Run:  node examples/run-live.ts "your research question"
  */
+
+import type { Workflow } from "../src/index.ts";
 
 const ANGLES_SCHEMA = {
   type: "object",
@@ -23,6 +25,10 @@ const ANGLES_SCHEMA = {
   },
   required: ["angles"],
 };
+
+interface Decomposition {
+  angles: string[];
+}
 
 const CLAIMS_SCHEMA = {
   type: "object",
@@ -43,6 +49,15 @@ const CLAIMS_SCHEMA = {
   required: ["claims"],
 };
 
+interface Claim {
+  claim: string;
+  basis: string;
+}
+
+interface Claims {
+  claims: Claim[];
+}
+
 const VOTE_SCHEMA = {
   type: "object",
   properties: {
@@ -52,10 +67,17 @@ const VOTE_SCHEMA = {
   required: ["refuted", "reason"],
 };
 
+interface Vote {
+  refuted: boolean;
+  reason: string;
+}
+
+type Verdict = "survived" | "refuted" | "could-not-adjudicate";
+
 const PANEL_SIZE = 3;
 
 /** Plain-code dedup key: casefold, strip punctuation, collapse whitespace, keep content words. */
-function claimKey(claim) {
+function claimKey(claim: string): string {
   return claim
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
@@ -66,12 +88,12 @@ function claimKey(claim) {
     .join(" ");
 }
 
-export default async function adversarialReview(w) {
+export default async function adversarialReview(w: Workflow<{ question?: string }>) {
   const question = w.args?.question;
   if (!question) throw new Error("pass {args: {question}}");
 
   // Decompose into distinct search angles — one structured call.
-  const decomposition = await w.agent(
+  const decomposition = await w.agent<Decomposition>(
     `Decompose this research question into distinct search angles that would surface different` +
       ` evidence:\n\n${question}`,
     { schema: ANGLES_SCHEMA },
@@ -80,27 +102,31 @@ export default async function adversarialReview(w) {
 
   // Fan out one searcher per angle. No barrier needed yet: each angle is independent.
   const perAngle = await w.parallel(
-    decomposition.angles.map((angle) => () =>
-      w.agent(
+    decomposition.angles.map((angle) => async () => ({
+      angle,
+      found: await w.agent<Claims>(
         `Research question: ${question}\n\nSearch angle: ${angle}\n\nFrom what you know,` +
           ` state the strongest specific, falsifiable claims relevant to this angle. Quality` +
           ` over quantity; include the basis for each.`,
         { schema: CLAIMS_SCHEMA },
       ),
-    ),
+    })),
   );
 
   // BARRIER + plain-code dedup: this genuinely needs every searcher's output at once.
-  const seen = new Map();
-  for (const [angleIndex, result] of perAngle.entries()) {
-    if (!result) continue; // a dead searcher is a coverage gap, recorded below — not a claim
-    for (const { claim, basis } of result.claims) {
+  const seen = new Map<string, Claim & { angle: string }>();
+  let deadSearchers = 0;
+  for (const searcher of perAngle) {
+    if (!searcher?.found) {
+      deadSearchers += 1; // a dead searcher is a coverage gap, reported below — not a claim
+      continue;
+    }
+    for (const { claim, basis } of searcher.found.claims) {
       const key = claimKey(claim);
-      if (!seen.has(key)) seen.set(key, { claim, basis, angle: decomposition.angles[angleIndex] });
+      if (!seen.has(key)) seen.set(key, { claim, basis, angle: searcher.angle });
     }
   }
   const deduped = [...seen.values()];
-  const deadSearchers = perAngle.filter((r) => r === null).length;
 
   // Each surviving claim flows through deep-read then panel independently — no barrier, so a
   // slow claim never blocks its neighbours.
@@ -116,7 +142,7 @@ export default async function adversarialReview(w) {
     async (entry) => {
       const votes = await w.parallel(
         Array.from({ length: PANEL_SIZE }, (_, seat) => () =>
-          w.agent(
+          w.agent<Vote>(
             `You are refutation panellist ${seat + 1} of ${PANEL_SIZE}. Try to refute this` +
               ` claim; default to refuted=true if the support is weak or the claim overreaches.` +
               `\n\nClaim: ${entry.claim}\n\nDeep read:\n${entry.reading ?? entry.basis}`,
@@ -125,9 +151,9 @@ export default async function adversarialReview(w) {
         ),
       );
       // Three outcomes, and nulls are "no vote cast" — never a refutation, never survival.
-      const cast = votes.filter((vote) => vote !== null);
+      const cast = votes.filter((vote): vote is Vote => vote !== null);
       const refutals = cast.filter((vote) => vote.refuted);
-      let verdict = "could-not-adjudicate";
+      let verdict: Verdict = "could-not-adjudicate";
       if (cast.length >= 2) verdict = refutals.length * 2 > cast.length ? "refuted" : "survived";
       return {
         claim: entry.claim,
