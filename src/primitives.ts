@@ -14,6 +14,11 @@
  *   the slowest single chain. A stage that throws drops that item to null and skips its
  *   remaining stages. Stage callbacks receive (previous, originalItem, index).
  *
+ * Memory (see contexts.ts):
+ * - context(name, options) -> a context file: a leaf that rewrites its own live context across
+ *   sequential steps. Each step is one agent call through the same scheduler, journaled with
+ *   the context's name.
+ *
  * Judgment (see decisions.ts for feels/match built on it):
  * - judge(state, question) -> Promise<answer>: one typed question about a state, answered with
  *   calibrated probabilities by the run's judge (Jev, or a text model emulating Jev's contract
@@ -27,6 +32,7 @@
  * null finding.
  */
 
+import { makeContexts } from "./contexts.ts";
 import { makeDecisions } from "./decisions.ts";
 import { realClock } from "./determinism.ts";
 import { callKey, judgeKey, type Journal, type JournalRecord } from "./journal.ts";
@@ -172,11 +178,25 @@ export function makeApi<Args>({
     }
   }
 
-  async function agent(prompt: string, opts: AgentOptions = {}): Promise<unknown> {
+  function agent(prompt: string, opts: AgentOptions = {}): Promise<unknown> {
     if (typeof prompt !== "string" || !prompt.trim()) {
       throw new TypeError("agent(prompt, opts): prompt must be a non-empty string");
     }
-    const record: JournalRecord = { kind: "agent", prompt, opts: { ...opts } };
+    return agentCall(prompt, opts, undefined);
+  }
+
+  /** One agent call, journaled with the context file it belongs to when it is a step. */
+  async function agentCall(
+    prompt: string,
+    opts: AgentOptions,
+    context: string | undefined,
+  ): Promise<unknown> {
+    const record: JournalRecord = {
+      kind: "agent",
+      prompt,
+      opts: { ...opts },
+      ...(context === undefined ? {} : { context }),
+    };
     try {
       return await settle(callKey(prompt, opts), record, () =>
         backend({ ...opts, prompt, signal }),
@@ -274,6 +294,7 @@ export function makeApi<Args>({
     pipeline: pipeline as Workflow<Args>["pipeline"],
     judge: judgeOne,
     ...makeDecisions(judgeOne),
+    context: makeContexts(agentCall),
     args,
   };
 }

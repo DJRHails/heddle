@@ -176,6 +176,58 @@ Rules the primitives follow, and why:
   counts both — a rewrite loop is precisely the loop that could run away), the concurrency ceiling,
   and the abort race.
 
+## Context files: a leaf that manages its own memory
+
+An `agent()` call is stateless, and that is the right default: the script assembles exactly
+what each leaf sees. But a leaf that works across many steps (reading a long log, tracking
+workers, iterating on its own drafts) then runs on a memory policy a human wrote into the
+script: summarise at N tokens, keep the last k turns, drop tool output. [Context Language
+Models](https://arxiv.org/abs/2609.37725) (Shao et al. 2026) measured the alternative. Mirror the
+live context into a file the model may rewrite without restriction (`c_{t+1} = f(c_t)`), and it
+beat harness-designed compaction, summary and offloading policies on long-horizon tasks (59.4%
+vs ~53% for the best baseline on BrowseComp-Plus at 21.5% fewer FLOPs; one run per method).
+`w.context` is that idea at heddle's grain: **the script keeps the control flow, and the model
+keeps its own memory.**
+
+```ts
+const reader = w.context("reader", { task: `Read the log; at the end you will be asked: ${q}`, budget: 3000 });
+for (const chunk of chunks) await reader.step(chunk);              // sequential: the next file is f(the last)
+const verdict = await reader.step<Verdict>(`Answer: ${q}`, { schema: VERDICT });
+reader.text;                                                       // the model's own memory, readable by code
+```
+
+- **Pinned contract, editable memory.** `task` and `system` are re-sent on every step and are
+  never part of the file, so no rewrite can corrupt them. The paper pins the system prompt and
+  the initial task the same way. An editable context is also a channel through which injected
+  or self-generated instructions can persist across steps (the paper's own safety note), and
+  keeping the contract out of the file is the cheap half of that defence.
+- **Append by default, rewrite on demand.** Each step is forced through `{reply, context?}`.
+  A `context` replaces the whole file, unrestricted. Without one, the observation and reply are
+  appended as `[[CTX_TURN n role=…]]` turns, so a quiet step costs no retyping.
+- **A counter, not a self-estimate.** Every step shows `[context: N/budget chars]` and flags a
+  file over budget. Models misjudge their own context size, and the paper's steering results all
+  rely on a readout like this. The budget is a readout and not a gate (characters, so heddle
+  carries no tokenizer). The backend's window is the hard limit, and a step that overflows it
+  fails to `null` like any other call.
+- **The usual discipline holds.** A failed step resolves `null` and leaves the file untouched.
+  Starting a step while one is in flight on the same file is a loud `TypeError`. Names are unique
+  per run, so contexts coexist (an orchestrator can read a worker's `text` and hand it on as an
+  observation). Each step is one agent call through the shared scheduler, keyed on the rendered
+  prompt with the file's bytes included and journaled with the context's name, so resume
+  replays the whole file history.
+
+What this deliberately is not. In the paper's taxonomy a heddle script is a harness-scheduled
+policy, the category it argues against, but its evidence comes from long single-agent loops
+where the context is the bottleneck. It says nothing against deterministic control flow over
+short schema-bound leaves, and its released harness itself wraps the model in deterministic
+guardrails (budget nudges, an edit gate, a rollback ledger). So heddle hands the model its
+*memory*, not the control flow. Model-decided spawning is not added either: the paper's
+subagents added little on single-repo tasks (44.2 vs 44.6), and its one large multi-agent win
+compared memory policies inside a fixed one-agent-per-repo swarm, which is `w.parallel` over
+contexts. The edit primitive is a full rewrite rather than the paper's code-over-the-file,
+because a leaf here has no sandbox to run code in. A rewrite costs output tokens in proportion
+to the file, which the budget keeps small.
+
 ## API
 
 Everything is typed: a script takes `Workflow<Args>` and the types below are exported from
@@ -201,6 +253,10 @@ strips types natively, so `node script.ts` needs no build step, and the package 
   "choice" | "score", instructions, criteria}`) — the leaf the two above are built on, and the
   way to a `score` (`{score, legend, probabilities, confidence}`). The answer type follows the
   question type (`AnswerFor<Q>`).
+- `w.context(name, { task, system?, model?, maxTokens?, budget?, initial? })` → a
+  `ContextFile` the model manages itself. `file.step(observation)` → the reply text, or `null`
+  on terminal failure (file untouched). `file.step<T>(observation, { schema })` → `T | null`.
+  `file.text` is the live file and `file.steps` counts settled steps.
 - Backends (`Backend`) are plain async functions `({prompt, system, schema, model, maxTokens,
   signal}) → result`; `anthropicBackend` drives the Messages API directly (fetch, zero SDK).
   The Agent SDK drops in behind the same signature when tool-using subagents are needed.
@@ -233,6 +289,15 @@ ANTHROPIC_API_KEY=... node examples/run-inbox.ts "the email text"          # Hai
 ANTHROPIC_API_KEY=... JEV_API_KEY=... node examples/run-inbox.ts "…"        # Jev judges
 ```
 
+[`examples/long-read.ts`](examples/long-read.ts) — a reader that manages its own memory: the
+script chunks a long document and steps a context file through it under a 3,000-character
+budget, then asks the question. No summarisation threshold, note template or eviction rule
+appears in the script.
+
+```sh
+ANTHROPIC_API_KEY=... node examples/run-long-read.ts paper.txt "your question"
+```
+
 `JEV_API_KEY` is kept in `.env.shared`, encrypted at rest by glassine (a sops-backed git
 filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for your key,
 `set -a; . ./.env.shared; set +a` loads it.
@@ -242,7 +307,7 @@ filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for y
 - `npm run check` — `tsc --noEmit` over `src`, `test` and `examples` (strict, with
   `noUncheckedIndexedAccess` and `erasableSyntaxOnly`, so every file also runs under Node's
   type stripping), `oxlint`, then the tests. `npm run build` emits `dist/` with declarations.
-- `npm test` — 27 tests against stub backends and judges. Primitives: pipeline interleaving
+- `npm test` — 37 tests against stub backends and judges. Primitives: pipeline interleaving
   proven by advancing one item to stage 3 while another's stage-1 call is still pending;
   `parallel` null-on-failure without rejection; thunks-vs-promises `TypeError`; determinism
   guards throwing (and restoring); resume replaying unchanged calls and re-running only the
@@ -254,7 +319,19 @@ filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for y
   default judge emulated over the backend. Judges: `llmJudge` building one schema per request,
   deriving Jev-shaped answers (argmax, expected-value score, legend), rescaling, first-label
   ties, rejecting zero mass and prose; Jev's `judge` posting the documented request shape with a
-  bearer token, retrying 529, failing 422 loudly (mocked fetch).
+  bearer token, retrying 529, failing 422 loudly (mocked fetch). Context files: append by
+  default and rewrite on demand, the pinned task and system riding every step outside the file,
+  the caller's schema wrapped under `reply`, the size readout and its over-budget flag, a failed
+  step leaving the file untouched, an in-flight step refused, duplicate names, empty tasks and
+  bad budgets refused, a schema-ignoring backend failing loudly, steps journaled with their
+  context name and the file history replayed on resume, and two coexisting contexts with one
+  file handed to the other.
+- Live run of the long read (Haiku 4.5, the CLM paper's 101k-character text in 17 chunks under
+  a 3,000-character budget, asked about a definition from chunk 5): answered correctly, citing
+  equation 6 after twelve more chunks. 13 of 18 steps rewrote the file. The rest appended a
+  chunk, which put the file over budget, and the model compacted it on the next step. The
+  memory peaked at 7,811 characters and went into the answer step at 5,759. Replay rerun
+  byte-identical with zero new calls.
 - Live runs of the adversarial review (Haiku 4.5 over the Messages API): 70 agent calls
   journaled, 16 deduped claims adjudicated by 3-vote panels, full-replay rerun identical.
 - Live runs of the inbox triage with Haiku as both writer and emulated judge: an invitation

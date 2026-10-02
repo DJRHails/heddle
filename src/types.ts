@@ -115,6 +115,41 @@ export interface DecisionOptions {
   confidence?: number;
 }
 
+/** A context file's pinned contract and starting state (see contexts.ts). */
+export interface ContextOptions {
+  /** The pinned task: re-sent on every step, never part of the editable file. */
+  task: string;
+  /** The pinned system prompt, forwarded to every step's agent call. */
+  system?: string;
+  model?: string;
+  maxTokens?: number;
+  /** The size, in characters, the model is asked to keep its file under; shown every step. */
+  budget?: number;
+  /** The file's starting content (default empty). */
+  initial?: string;
+}
+
+export interface StepOptions {
+  /** Force the step's `reply` through structured output matching this schema. */
+  schema?: JsonSchema;
+}
+
+/** A live context the model rewrites itself, one sequential step at a time. */
+export interface ContextFile {
+  readonly name: string;
+  /** The live file: the model's own memory, readable by the script. */
+  readonly text: string;
+  /** Steps that settled (a failed step neither counts nor touches the file). */
+  readonly steps: number;
+  /** One step: the model's reply text, or `null` on terminal failure (the file is untouched). */
+  step(observation: string, opts?: Omit<StepOptions, "schema">): Promise<string | null>;
+  /** One step whose reply is forced through `schema`; `T` asserts the shape it guarantees. */
+  step<T = unknown>(
+    observation: string,
+    opts: StepOptions & { schema: JsonSchema },
+  ): Promise<T | null>;
+}
+
 /** The api object a script receives as `w`. */
 export interface Workflow<Args = unknown> {
   /** One subagent call. Final text, or `null` on terminal failure (the journal has the story). */
@@ -160,6 +195,9 @@ export interface Workflow<Args = unknown> {
     criteria: readonly Label[] | Readonly<Record<Label, string | null>>,
     opts?: DecisionOptions,
   ): Promise<Label | null>;
+
+  /** A named context file the model manages itself; names are unique per run. */
+  context(name: string, options: ContextOptions): ContextFile;
 
   /** Whatever `run()` was given as `args`, verbatim. */
   args: Args;
