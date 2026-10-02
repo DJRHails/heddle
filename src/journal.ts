@@ -21,7 +21,7 @@ import type { AgentOptions, Question } from "./types.ts";
 
 /** What was asked, and of whom. */
 export type JournalRecord =
-  | { kind: "agent"; prompt: string; opts: AgentOptions }
+  | { kind: "agent"; prompt: string; opts: AgentOptions; context?: string }
   | { kind: "judge"; state: unknown; question: Question; model: string | null };
 
 /** How it went. */
