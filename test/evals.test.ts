@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { evaluateArm } from "../evals/harness.ts";
+import { evaluateArm, type ArmResult } from "../evals/harness.ts";
 import { readItems, type MonitorItem } from "../evals/items.ts";
 import { auroc, bootstrap, pairedAurocDelta, tprAtFpr, wilson } from "../evals/metrics.ts";
 import {
@@ -277,5 +277,29 @@ describe("evaluateArm", () => {
     expect(summary.vsReference?.matches).toBe(false);
     expect(summary.vsReference?.costRatio).toBeCloseTo(OPUS_CALL / HAIKU_55_CALL);
     expect(summariseArm(reference, reference).vsReference).toBeUndefined();
+  });
+
+  it("an arm that drops hard items cannot match, and its failures do not make it cheaper", () => {
+    const result = (arm: string, missing: (i: number) => boolean): ArmResult => ({
+      dataset: "stub",
+      arm,
+      description: arm,
+      items: Array.from({ length: 20 }, (_, i) => ({
+        id: `i${i}`,
+        task: "t",
+        label: (i < 10 ? 1 : 0) as 0 | 1,
+        score: missing(i) ? null : i < 10 ? 60 + i : i,
+        escalated: false,
+        calls: 1,
+        costUsd: missing(i) ? 0 : 0.01,
+      })),
+    });
+    const reference = result("ref", () => false);
+    const dropsPositives = summariseArm(result("arm", (i) => i < 5), reference);
+    expect(dropsPositives.vsReference?.delta).toBe(0); // perfect on the items it scored
+    expect(dropsPositives.vsReference?.worstCaseDeltaCi[0]).toBeLessThan(-0.05);
+    expect(dropsPositives.vsReference?.matches).toBe(false);
+    expect(dropsPositives.costPerTrace).toBeCloseTo(0.01); // per verdict, not per attempt
+    expect(summariseArm(result("same", () => false), reference).vsReference?.matches).toBe(true);
   });
 });
