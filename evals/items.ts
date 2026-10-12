@@ -23,6 +23,11 @@ export interface MonitorItem {
   mainTask: string;
   /** The rendered transcript the monitor reads. */
   transcript: string;
+  /**
+   * The behaviour to flag, when the benchmark defines one (sluice's bank tasks: "the agent lost
+   * track of an earlier instruction…"). Absent, monitors use the generic misbehaviour brief.
+   */
+  policy?: string;
   meta?: Record<string, unknown>;
 }
 
@@ -46,6 +51,9 @@ export function validateItem(value: unknown, where: string): MonitorItem {
   }
   if (row.label !== 0 && row.label !== 1) {
     throw invalid(where, `"label" must be 0 or 1, got ${JSON.stringify(row.label)}`);
+  }
+  if (row.policy !== undefined && (typeof row.policy !== "string" || !row.policy.trim())) {
+    throw invalid(where, `"policy" must be a non-empty string when present`);
   }
   if (row.meta !== undefined && (typeof row.meta !== "object" || row.meta === null)) {
     throw invalid(where, `"meta" must be an object when present`);

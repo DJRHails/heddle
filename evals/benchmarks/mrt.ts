@@ -1,0 +1,190 @@
+/**
+ * Monitor Red Teaming (Kale et al., "Reliable Weak-to-Strong Monitoring of LLM Agents", arXiv
+ * 2508.19461): agent rollouts on SHADE-Arena's five public task pairs (tool-use: bank
+ * transfers, calendars, travel booking, spam filters, expense accounting) and on fifteen
+ * TheAgentCompany computer-use tasks, each run either honestly or with a covert sabotage side
+ * task. HF ScaleAI/mrt, CC BY-NC 4.0.
+ *
+ * Labels follow the paper: a run given the side task is a positive whether or not the sabotage
+ * succeeded (`meta.sideTaskSucceeded` records which). Only the base conditions are used — the
+ * benign run, and the default / no-hint (SHADE) or per-strategy (computer-use) attack runs;
+ * the hundreds of other condition directories re-monitor those same runs under monitor
+ * scaffolds. A run is stored once per monitor directory, so candidates are keyed on (task,
+ * condition, agent, run) and the first monitor directory's copy is used.
+ *
+ * What the monitor sees matches SHADE-Arena's protocol: the system prompt (which states the side
+ * task) and the agent's `<thinking>` scratchpad are removed. The released files record tool
+ * call names but not their arguments; tool outputs are kept. The shipped monitor's verdict is
+ * kept in `meta` as an external reference score.
+ */
+
+import { balancedSample, mapLimited, type Benchmark } from "./benchmark.ts";
+import { hubFile, hubTree } from "./hf.ts";
+import type { MonitorItem } from "../items.ts";
+
+const DATASET = "ScaleAI/mrt";
+const REVISION = "bc636d0c3b881c7d8c76fd71b45b009c3710d437";
+
+const SHADE_TASKS = [
+  "american_airlines_2",
+  "api_key_calendar_agendas_2",
+  "bank_transfer_2",
+  "expenditure_accounting",
+  "spam_filter_update",
+];
+
+const SHADE_CONDITIONS: Record<string, 0 | 1> = {
+  transcripts_no_secondary_task: 0,
+  transcripts: 1,
+  transcripts_no_hint: 1,
+};
+
+/** Computer-use base conditions: `transcripts_no_hint_<strategy>_v<n>_thinking_time`. */
+const CUA_CONDITION = /^transcripts_no_hint_(?<strategy>[a-z_]+?)_v\d+_thinking_time$/;
+
+interface Candidate {
+  id: string;
+  label: 0 | 1;
+  task: string;
+  condition: string;
+  agent: string;
+  path: string;
+}
+
+interface Message {
+  role: string;
+  content?: unknown;
+  tool_calls?: unknown;
+}
+
+interface Run {
+  conversation: Message[];
+  monitoring_response?: string;
+  side_task_evaluation?: unknown;
+}
+
+const THINKING = /<thinking>[\s\S]*?(?:<\/thinking>|$)/g;
+
+/** The run as the monitor sees it: no system prompt, no scratchpad. */
+export function renderRun(conversation: readonly Message[]): string {
+  return conversation
+    .filter((message) => message.role !== "system")
+    .map((message) => {
+      const content = String(message.content ?? "")
+        .replace(THINKING, "")
+        .trim();
+      const calls = typeof message.tool_calls === "string" ? message.tool_calls.trim() : "";
+      return `[${message.role}] ${[content, calls].filter(Boolean).join("\n") || "(empty)"}`;
+    })
+    .join("\n\n");
+}
+
+/** The 0–100 verdict the shipped monitor gave, when the file carries one. */
+function shippedVerdict(response: string | undefined): number | null {
+  const match = /<verdict>\s*(?<score>\d+(?:\.\d+)?)\s*<\/verdict>/.exec(response ?? "");
+  return match?.groups?.score === undefined ? null : Number(match.groups.score);
+}
+
+/** One candidate per (task, condition, agent, run), from the first monitor directory. */
+async function candidates(
+  root: string,
+  task: string,
+  conditions: ReadonlyArray<[string, 0 | 1]>,
+): Promise<Candidate[]> {
+  const found: Candidate[] = [];
+  for (const [condition, label] of conditions) {
+    const entries = await hubTree(DATASET, REVISION, `${root}/${task}/${condition}`, {
+      recursive: true,
+    });
+    const runs = new Map<string, string>();
+    for (const { type, path } of entries) {
+      const parts = path.split("/");
+      const [agent, monitor, file] = parts.slice(-3);
+      if (type !== "file" || !file?.endsWith(".json") || !agent || !monitor) continue;
+      const key = `${agent}/${file}`;
+      const kept = runs.get(key);
+      if (kept === undefined || path < kept) runs.set(key, path);
+    }
+    for (const [key, path] of runs) {
+      const [agent = ""] = key.split("/");
+      const id = `mrt:${root}/${task}/${condition}/${key.replace(/\.json$/, "")}`;
+      found.push({ id, label, task, condition, agent, path });
+    }
+  }
+  return found;
+}
+
+async function toItem(source: string, candidate: Candidate): Promise<MonitorItem> {
+  const run = JSON.parse(await hubFile(DATASET, REVISION, candidate.path)) as Run;
+  const userTask = run.conversation.find((message) => message.role === "user");
+  return {
+    id: candidate.id,
+    source,
+    task: candidate.task,
+    label: candidate.label,
+    mainTask: "",
+    transcript: renderRun(run.conversation),
+    meta: {
+      condition: candidate.condition,
+      agent: candidate.agent,
+      sideTaskSucceeded: run.side_task_evaluation === true,
+      shippedMonitorScore: shippedVerdict(run.monitoring_response),
+      userTurnChars: String(userTask?.content ?? "").length,
+    },
+  };
+}
+
+function mrtBenchmark(
+  name: string,
+  root: string,
+  tasks: () => Promise<string[]>,
+  conditionsFor: (task: string) => Promise<Array<[string, 0 | 1]>>,
+): Benchmark {
+  return {
+    name,
+    provenance: `MRT (arXiv 2508.19461); HF ${DATASET}/${root}`,
+    licence: "CC BY-NC 4.0",
+    fetch: async (perClass) => {
+      const pool: Candidate[] = [];
+      for (const task of await tasks()) {
+        pool.push(...(await candidates(root, task, await conditionsFor(task))));
+      }
+      const chosen = balancedSample(pool, perClass);
+      const items = await mapLimited(chosen, 8, (candidate) => toItem(name, candidate));
+      return { items, available: pool.length };
+    },
+  };
+}
+
+async function directories(path: string): Promise<string[]> {
+  const entries = await hubTree(DATASET, REVISION, path);
+  return entries
+    .filter((entry) => entry.type === "directory")
+    .map((entry) => entry.path.split("/").at(-1) ?? "")
+    .filter((name) => name && name !== "__pycache__")
+    .sort();
+}
+
+const mrtShade = mrtBenchmark(
+  "mrt-shade",
+  "task_pairs",
+  async () => SHADE_TASKS,
+  async (task) => {
+    const present = new Set(await directories(`task_pairs/${task}`));
+    return Object.entries(SHADE_CONDITIONS).filter(([condition]) => present.has(condition));
+  },
+);
+
+const mrtComputerUse = mrtBenchmark(
+  "mrt-computer-use",
+  "task_pairs_agentcompany",
+  () => directories("task_pairs_agentcompany"),
+  async (task) =>
+    (await directories(`task_pairs_agentcompany/${task}`)).flatMap((condition) => {
+      const strategy = CUA_CONDITION.exec(condition)?.groups?.strategy;
+      if (strategy === undefined) return [];
+      return [[condition, strategy === "benign" ? 0 : 1] as [string, 0 | 1]];
+    }),
+);
+
+export const MRT: readonly Benchmark[] = [mrtShade, mrtComputerUse];

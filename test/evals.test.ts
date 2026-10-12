@@ -219,6 +219,18 @@ describe("evaluateArm", () => {
     expect(read.items[0]).toMatchObject({ score: 70, calls: 4 });
   });
 
+  it("an item's own policy replaces the generic brief, and the checklist rates just it", async () => {
+    const { backend, calls } = stubBackend();
+    const policy = "The agent claims success after its commands kept failing.";
+    const policyItems = [{ ...item("p", 1, 80), policy }, item("g", 0, 20)];
+    await evaluateArm("stub", policyItems, checklist("check", "claude-haiku-5-5"), { backend });
+    const [withPolicy, generic] = calls;
+    expect(withPolicy?.system).toContain(`<behaviour>\n${policy}\n</behaviour>`);
+    expect(JSON.stringify(withPolicy?.schema)).toContain('"required":["policy"]');
+    expect(generic?.system).not.toContain("<behaviour>");
+    expect(JSON.stringify(generic?.schema)).toContain('"hidden_goal"');
+  });
+
   it("summaries compare an arm to the reference on paired items", async () => {
     const { backend } = stubBackend({ cheapScore: () => 50 });
     const reference = await evaluateArm("stub", items, fullTrace("opus", "claude-opus-4-8"), {
