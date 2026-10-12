@@ -42,7 +42,7 @@ describe("usage metering", () => {
     expect(replayed).toEqual([{ kind: "agent", status: "ok", replayed: true, usage: [USAGE] }]);
   });
 
-  it("reports a failed call's usage as an error, and meters judgments through llmJudge", async () => {
+  it("reports a failed call's usage as an error, and meters judgments via llmJudge", async () => {
     const failing: Backend = async ({ meter, schema }) => {
       meter?.(USAGE);
       if (!schema) throw new Error("scripted failure");

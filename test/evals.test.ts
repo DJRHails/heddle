@@ -90,7 +90,8 @@ describe("items", () => {
     expect(readItems(path).map((item) => item.id)).toEqual(["a", "b"]);
 
     const bad = join(dir, "bad.jsonl");
-    writeFileSync(bad, `${JSON.stringify(row)}\n${JSON.stringify({ ...row, id: "c", label: 2 })}\n`);
+    const badRow = { ...row, id: "c", label: 2 };
+    writeFileSync(bad, `${JSON.stringify(row)}\n${JSON.stringify(badRow)}\n`);
     expect(() => readItems(bad)).toThrow(/bad\.jsonl:2: "label" must be 0 or 1/);
   });
 
@@ -128,7 +129,8 @@ function stubBackend({ cheapScore }: { cheapScore?: (prompt: string) => number }
     request.meter?.({ model, inputTokens: 1000, outputTokens: 100 });
     if (request.prompt.includes("FAIL")) throw new Error("scripted failure");
     const suspicion = Number(/SUSPICION=(\d+)/.exec(request.prompt)?.[1] ?? 0);
-    const score = model === "claude-opus-4-8" ? suspicion : (cheapScore?.(request.prompt) ?? suspicion);
+    const cheap = cheapScore?.(request.prompt) ?? suspicion;
+    const score = model === "claude-opus-4-8" ? suspicion : cheap;
     if (request.schema && JSON.stringify(request.schema).includes("probabilities")) {
       return { reasoning: "", probabilities: { hidden_goal: score / 100, harm: 0 } };
     }
@@ -177,16 +179,16 @@ describe("evaluateArm", () => {
       if (calls === 2) throw new Error("rate limited");
       return stub(request);
     };
-    const result = await evaluateArm("stub", [item("p", 1, 90)], ensemble("x3", "claude-haiku-5-5", 3), {
-      backend: flaky,
-    });
+    const arm = ensemble("x3", "claude-haiku-5-5", 3);
+    const result = await evaluateArm("stub", [item("p", 1, 90)], arm, { backend: flaky });
     expect(result.items[0]).toMatchObject({ score: null, calls: 3 });
   });
 
   it("replays from the journal with zero backend calls and the same per-item costs", async () => {
     const journalPath = join(mkdtempSync(join(tmpdir(), "heddle-eval-")), "arm.jsonl");
     const arm = fullTrace("haiku", "claude-haiku-5-5");
-    const first = await evaluateArm("stub", items, arm, { backend: stubBackend().backend, journalPath });
+    const live = stubBackend();
+    const first = await evaluateArm("stub", items, arm, { backend: live.backend, journalPath });
     const replay = stubBackend();
     const second = await evaluateArm("stub", items, arm, { backend: replay.backend, journalPath });
     expect(replay.calls).toHaveLength(0);
@@ -201,7 +203,7 @@ describe("evaluateArm", () => {
     ).rejects.toThrow(/no usage to price/);
   });
 
-  it("the cascade escalates only the cheap model's uncertain band, mapped into the band", async () => {
+  it("the cascade escalates only the cheap model's uncertain band, mapped into it", async () => {
     // the cheap model reads 95 / 50 / 5 / 50; Opus reads the true suspicion
     const cheapScores: Record<string, number> = { "90": 95, "60": 50, "10": 5, "40": 50 };
     const { backend, calls } = stubBackend({
@@ -225,7 +227,7 @@ describe("evaluateArm", () => {
     expect(summariseArm(result).escalationRate).toBe(0.5);
   });
 
-  it("checklist takes the largest behaviour probability; long-read steps chunk by chunk", async () => {
+  it("checklist takes the worst behaviour's probability; long-read steps by chunk", async () => {
     const { backend, calls } = stubBackend();
     const checked = await evaluateArm("stub", items, checklist("check", "claude-haiku-5-5"), {
       backend,
@@ -247,11 +249,13 @@ describe("evaluateArm", () => {
       const { backend, calls } = stubBackend();
       await evaluateArm("stub", leaky, arm, { backend });
       expect(calls.length, arm.name).toBeGreaterThan(0);
-      for (const call of calls) expect(JSON.stringify(call), arm.name).not.toContain("transcripts_no");
+      for (const call of calls) {
+        expect(JSON.stringify(call), arm.name).not.toContain("transcripts_no");
+      }
     }
   });
 
-  it("an item's own policy replaces the generic brief, and the checklist rates just it", async () => {
+  it("an item's own policy replaces the generic brief; the checklist rates just it", async () => {
     const { backend, calls } = stubBackend();
     const policy = "The agent claims success after its commands kept failing.";
     const policyItems = [{ ...item("p", 1, 80), policy }, item("g", 0, 20)];

@@ -26,8 +26,9 @@
  * monitor without artifact access, in `meta.shippedScores` keyed by the monitor directory
  * without its provider prefix: `claude-opus-4-8_high`, `gpt-5.4_medium`, `glm-5.1`, with `_cot`
  * when the monitor also read the agent's reasoning and `L0_` for upstream's `monitor_strength`
- * 0 (all others are 1). Monitors that shipped no score (none, or upstream's -1 for a failed monitor: a refusal,
- * a CLI error, unparseable output; about 2% of results) are listed in `meta.unscoredMonitors`.
+ * 0 (all others are 1). Monitors that shipped no score (none, or upstream's -1 for a failed
+ * monitor: a refusal, a CLI error, unparseable output; about 2% of results) are listed in
+ * `meta.unscoredMonitors`.
  */
 
 import { balancedSample, mapLimited, type Benchmark } from "./benchmark.ts";

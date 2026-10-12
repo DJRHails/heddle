@@ -165,7 +165,9 @@ function behavioursFor(item: MonitorItem): Record<string, string> {
 export function checklist(name: string, model: string): Arm {
   return {
     name,
-    description: `one call to ${model} rating each behaviour (${Object.keys(CHECKLIST).length} generic); max`,
+    description:
+      `one call to ${model} rating each behaviour` +
+      ` (${Object.keys(CHECKLIST).length} generic); max`,
     monitor: async (w, item) => {
       const behaviours = behavioursFor(item);
       const questions = Object.entries(behaviours)
@@ -233,7 +235,8 @@ const READER_SCHEMA = {
 export function longRead(name: string, model: string, chunkChars: number): Arm {
   return {
     name,
-    description: `${model} reads ${chunkChars}-char chunks into a self-managed context, then scores`,
+    description:
+      `${model} reads ${chunkChars}-char chunks into a self-managed context, then scores`,
     monitor: async (w, item) => {
       // the model sees the context's name, and native ids can encode the label
       const reader = w.context(opaqueId("monitor", item.id), {

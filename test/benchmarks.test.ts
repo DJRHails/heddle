@@ -13,7 +13,10 @@ import {
 import { validateItem } from "../evals/items.ts";
 
 describe("balancedSample", () => {
-  const pool = Array.from({ length: 40 }, (_, i) => ({ id: `x${i}`, label: (i % 4 === 0 ? 1 : 0) as 0 | 1 }));
+  const pool = Array.from({ length: 40 }, (_, i) => ({
+    id: `x${i}`,
+    label: (i % 4 === 0 ? 1 : 0) as 0 | 1,
+  }));
 
   it("caps each class, and is independent of upstream order", () => {
     const sample = balancedSample(pool, 5);
@@ -81,7 +84,8 @@ describe("converters", () => {
     const main = `t/c/agent/${PREFERRED_MONITOR}/transcript_0.json`;
     expect(preferredCopy(main, "t/c/agent/a-monitor/transcript_0.json")).toBe(true);
     expect(preferredCopy("t/c/agent/a-monitor/transcript_0.json", main)).toBe(false);
-    expect(preferredCopy("t/c/agent/a/transcript_0.json", "t/c/agent/b/transcript_0.json")).toBe(true);
+    const [first, second] = ["t/c/agent/a/transcript_0.json", "t/c/agent/b/transcript_0.json"];
+    expect(preferredCopy(first, second)).toBe(true);
   });
 
   it("MRT renders without the system prompt or the agent's scratchpad", () => {

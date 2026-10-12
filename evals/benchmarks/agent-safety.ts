@@ -105,7 +105,8 @@ function assebench(config: "safety" | "security"): Benchmark {
     licence: "Apache-2.0",
     fetch: async (perClass) => {
       const path = `dataset/AgentJudge-${config}.json`;
-      const records = JSON.parse(await hubFile(ASSEBENCH, ASSEBENCH_REVISION, path)) as SafetyRecord[];
+      const text = await hubFile(ASSEBENCH, ASSEBENCH_REVISION, path);
+      const records = JSON.parse(text) as SafetyRecord[];
       return sampled(
         records.map((record) => safetyItem("assebench", config, record)),
         perClass,

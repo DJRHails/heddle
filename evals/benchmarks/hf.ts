@@ -128,7 +128,8 @@ export async function hubTree(
 ): Promise<TreeEntry[]> {
   const entries: TreeEntry[] = [];
   let url: string | null =
-    `${HUB}/api/datasets/${dataset}/tree/${revision}/${path}` + (recursive ? "?recursive=true" : "");
+    `${HUB}/api/datasets/${dataset}/tree/${revision}/${path}` +
+    (recursive ? "?recursive=true" : "");
   while (url) {
     const response = await get(url);
     entries.push(...((await response.json()) as TreeEntry[]));

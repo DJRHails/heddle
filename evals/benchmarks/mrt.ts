@@ -187,7 +187,8 @@ function mrtBenchmark(
       // over-draw, so dropping runs whose rendered transcripts repeat still fills each class
       const chosen = balancedSample(pool, Math.ceil(perClass * DUPLICATE_SLACK));
       const items = await mapLimited(chosen, 8, (candidate) => toItem(name, candidate));
-      return { items: balancedSample(distinctTranscripts(items), perClass), available: pool.length };
+      const distinct = distinctTranscripts(items);
+      return { items: balancedSample(distinct, perClass), available: pool.length };
     },
   };
 }

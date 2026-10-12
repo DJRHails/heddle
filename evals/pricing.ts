@@ -42,15 +42,16 @@ export function requestCost(usage: Usage): number {
   const price = PRICES[usage.model];
   if (!price) {
     throw new Error(
-      `no price for model "${usage.model}" — add it to evals/pricing.ts before running an arm on it`,
+      `no price for model "${usage.model}" — add it to evals/pricing.ts before running an` +
+        " arm on it",
     );
   }
   const read = usage.cacheReadTokens ?? 0;
   const write = usage.cacheWriteTokens ?? 0;
   const promptTokens = usage.inputTokens + read + write;
   const card = price.long && promptTokens > price.long.overTokens ? price.long : price.base;
-  const inputDollars =
-    usage.inputTokens * card.input + read * card.input * CACHE_READ + write * card.input * CACHE_WRITE;
+  const inputTokenEquivalents = usage.inputTokens + read * CACHE_READ + write * CACHE_WRITE;
+  const inputDollars = inputTokenEquivalents * card.input;
   return (inputDollars + usage.outputTokens * card.output) / 1_000_000;
 }
 
