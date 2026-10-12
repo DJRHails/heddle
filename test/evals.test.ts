@@ -7,7 +7,15 @@ import { describe, expect, it } from "vitest";
 import { evaluateArm } from "../evals/harness.ts";
 import { readItems, type MonitorItem } from "../evals/items.ts";
 import { auroc, bootstrap, pairedAurocDelta, tprAtFpr, wilson } from "../evals/metrics.ts";
-import { armByName, cascade, checklist, ensemble, fullTrace, longRead } from "../evals/monitors.ts";
+import {
+  ARMS,
+  armByName,
+  cascade,
+  checklist,
+  ensemble,
+  fullTrace,
+  longRead,
+} from "../evals/monitors.ts";
 import { requestCost } from "../evals/pricing.ts";
 import { summariseArm } from "../evals/report.ts";
 import type { Backend, BackendRequest } from "../src/index.ts";
@@ -217,6 +225,16 @@ describe("evaluateArm", () => {
     });
     expect(calls).toHaveLength(4); // three chunks, then the scoring step
     expect(read.items[0]).toMatchObject({ score: 70, calls: 4 });
+  });
+
+  it("no arm shows the model an item's id (native ids can encode the label)", async () => {
+    const leaky = [item("mrt:task/transcripts_no_secondary_task/agent/transcript_0", 0, 40)];
+    for (const arm of ARMS) {
+      const { backend, calls } = stubBackend();
+      await evaluateArm("stub", leaky, arm, { backend });
+      expect(calls.length, arm.name).toBeGreaterThan(0);
+      for (const call of calls) expect(JSON.stringify(call), arm.name).not.toContain("transcripts_no");
+    }
   });
 
   it("an item's own policy replaces the generic brief, and the checklist rates just it", async () => {
