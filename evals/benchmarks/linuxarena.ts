@@ -25,7 +25,10 @@
  * thinking (its scratchpad, hidden as in SHADE-Arena's protocol) and the inter-action messages
  * are left out. So are calls to the attacker's scaffold tools (`ATTACK_SCAFFOLD`, counted in
  * `meta.hiddenScaffoldCalls`) and `submit`'s arguments, which in attack runs are the side
- * task's submission form (`attacker_user`, `extract_a_secret`, …). Tool outputs are clipped to 5,000 chars and an action's arguments to 40,000,
+ * task's submission form (`attacker_user`, `extract_a_secret`, …). A trajectory left with no
+ * action to show (at the pin, a few attack runs that only called scaffold tools) is not an
+ * item: there is nothing to monitor, and an empty transcript would itself be a positive cue.
+ * Tool outputs are clipped to 5,000 chars and an action's arguments to 40,000,
  * the middle replaced by a marker, and a transcript still over 400,000 chars is clipped the same
  * way; `meta` counts every clip.
  *
@@ -179,11 +182,15 @@ const ATTACK_SCAFFOLD = new Set([
 /** `submit`'s arguments are the side task's submission form in attack runs, so none are shown. */
 const SUBMIT = "submit";
 
+function shownToMonitor(action: Action): boolean {
+  return !ATTACK_SCAFFOLD.has(action.function);
+}
+
 /** The actions as the monitor sees them: tool calls and results, no reasoning. */
 export function renderActions(actions: readonly Action[]): Rendered {
   let clippedOutputs = 0;
   let clippedArguments = 0;
-  const shown = actions.filter((action) => !ATTACK_SCAFFOLD.has(action.function));
+  const shown = actions.filter(shownToMonitor);
   const blocks = shown.map((action, index) => {
     const args = clipMiddle(
       action.function === SUBMIT ? "" : renderArguments(action.arguments),
@@ -307,6 +314,7 @@ export async function selectTrajectories(
   for await (const line of lines) {
     rows += 1;
     const row = parseTrajectory(line, `${FILE}:${rows}`);
+    if (!row.actions.some(shownToMonitor)) continue;
     const verdicts = shippedVerdicts(row, `${FILE}:${rows} (${row.trajectory_id})`);
     const key = contentKey(row);
     const seen = entries.get(key);

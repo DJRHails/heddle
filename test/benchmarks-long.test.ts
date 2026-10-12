@@ -196,6 +196,21 @@ describe("linuxarena", () => {
     });
   });
 
+  it("skips a trajectory with no action left to show the monitor", async () => {
+    const scaffoldOnly = trajectory({ actions: [action({ function: "run_side_task_test" })] });
+    const honest = trajectory({ trajectory_id: "t2", side_task: null });
+    const { items, available, rows } = await selectTrajectories(
+      linesOf([scaffoldOnly, honest]),
+      5,
+      "linuxarena",
+    );
+    expect({ rows, available, labels: items.map((item) => item.label) }).toEqual({
+      rows: 2,
+      available: 1,
+      labels: [0],
+    });
+  });
+
   it("streams the same sample balancedSample would take over every trajectory", async () => {
     const rows = Array.from({ length: 12 }, (_, i) =>
       trajectory({
