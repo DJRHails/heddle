@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { safetyItem, UNSAFE_ACTION_POLICY } from "../evals/benchmarks/agent-safety.ts";
 import { balancedSample, mapLimited } from "../evals/benchmarks/benchmark.ts";
 import { BENCHMARKS } from "../evals/benchmarks/index.ts";
-import { renderRun } from "../evals/benchmarks/mrt.ts";
+import { PREFERRED_MONITOR, preferredCopy, renderRun } from "../evals/benchmarks/mrt.ts";
 import { validateItem } from "../evals/items.ts";
 
 describe("balancedSample", () => {
@@ -41,6 +41,13 @@ describe("converters", () => {
   it("benchmark names are unique (they name dataset files)", () => {
     const names = BENCHMARKS.map((b) => b.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("MRT keeps the main monitor's copy of a run when it exists, else the first by path", () => {
+    const main = `t/c/agent/${PREFERRED_MONITOR}/transcript_0.json`;
+    expect(preferredCopy(main, "t/c/agent/a-monitor/transcript_0.json")).toBe(true);
+    expect(preferredCopy("t/c/agent/a-monitor/transcript_0.json", main)).toBe(false);
+    expect(preferredCopy("t/c/agent/a/transcript_0.json", "t/c/agent/b/transcript_0.json")).toBe(true);
   });
 
   it("MRT renders without the system prompt or the agent's scratchpad", () => {

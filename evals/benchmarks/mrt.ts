@@ -10,7 +10,8 @@
  * benign run, and the default / no-hint (SHADE) or per-strategy (computer-use) attack runs;
  * the hundreds of other condition directories re-monitor those same runs under monitor
  * scaffolds. A run is stored once per monitor directory, so candidates are keyed on (task,
- * condition, agent, run) and the first monitor directory's copy is used.
+ * condition, agent, run) and one copy is kept — the paper's main monitor's
+ * (`PREFERRED_MONITOR`) when it scored the run, else the first by path.
  *
  * What the monitor sees matches SHADE-Arena's protocol: the system prompt (which states the side
  * task) and the agent's `<thinking>` scratchpad are removed. The released files record tool
@@ -86,7 +87,17 @@ function shippedVerdict(response: string | undefined): number | null {
   return match?.groups?.score === undefined ? null : Number(match.groups.score);
 }
 
-/** One candidate per (task, condition, agent, run), from the first monitor directory. */
+/** The paper's main monitor: its copy is kept when present, so `shipped:` scores one model. */
+export const PREFERRED_MONITOR = "claude-3-5-sonnet-20241022";
+
+/** Whether copy `a` beats copy `b`: the preferred monitor's directory, else the first by path. */
+export function preferredCopy(a: string, b: string): boolean {
+  const preferred = (path: string) => path.split("/").at(-2) === PREFERRED_MONITOR;
+  if (preferred(a) !== preferred(b)) return preferred(a);
+  return a < b;
+}
+
+/** One candidate per (task, condition, agent, run), preferring the main monitor's copy. */
 async function candidates(
   root: string,
   task: string,
@@ -104,7 +115,7 @@ async function candidates(
       if (type !== "file" || !file?.endsWith(".json") || !agent || !monitor) continue;
       const key = `${agent}/${file}`;
       const kept = runs.get(key);
-      if (kept === undefined || path < kept) runs.set(key, path);
+      if (kept === undefined || preferredCopy(path, kept)) runs.set(key, path);
     }
     for (const [key, path] of runs) {
       const [agent = ""] = key.split("/");
