@@ -193,18 +193,32 @@ function claudeLogs(directories: readonly string[]): string[] {
     .sort((a, b) => Number(a.endsWith("_cot")) - Number(b.endsWith("_cot")) || (a < b ? -1 : 1));
 }
 
-async function mainTaskOf(root: string, files: ReadonlySet<string>): Promise<[string, string]> {
+interface MainTask {
+  text: string;
+  from: string;
+  /** Logs passed over because upstream wrote them malformed (interleaved lines). */
+  malformedLogs: string[];
+}
+
+/** The task instruction from the first Claude monitor log that recorded it. */
+async function mainTaskOf(root: string, files: ReadonlySet<string>): Promise<MainTask> {
   const directories = [...files].map((file) => file.split("/")[0] ?? "");
+  const malformedLogs: string[] = [];
   for (const directory of claudeLogs([...new Set(directories)])) {
     const log = `${directory}/monitor_out_sanitized.json`;
     if (!files.has(log)) continue;
-    const instruction = taskInstruction(
-      await hubFile(DATASET, REVISION, `${root}/${log}`),
-      `${DATASET}/${root}/${log}`,
-    );
-    if (instruction !== null) return [instruction, `${root}/${log}`];
+    const text = await hubFile(DATASET, REVISION, `${root}/${log}`);
+    let instruction: string | null;
+    try {
+      instruction = taskInstruction(text, `${DATASET}/${root}/${log}`);
+    } catch (error) {
+      console.warn(`research-arena: skipping a malformed monitor log: ${(error as Error).message}`);
+      malformedLogs.push(log);
+      continue;
+    }
+    if (instruction !== null) return { text: instruction, from: `${root}/${log}`, malformedLogs };
   }
-  return ["", "none"];
+  return { text: "", from: "none", malformedLogs };
 }
 
 async function toItem(source: string, candidate: ResearchRun): Promise<MonitorItem> {
@@ -221,10 +235,16 @@ async function toItem(source: string, candidate: ResearchRun): Promise<MonitorIt
     const result = JSON.parse(await hubFile(DATASET, REVISION, `${root}/${file}`));
     return [directory, result as MonitorResult] as [string, MonitorResult];
   });
-  const [mainTask, mainTaskFrom] = await mainTaskOf(root, files);
+  const mainTask = await mainTaskOf(root, files);
   const transcript = await hubFile(DATASET, REVISION, `${candidate.path}/${TRANSCRIPT}`);
   const verdicts = collectVerdicts(results);
-  return researchItem(source, candidate, { transcript, mainTask, mainTaskFrom, verdicts });
+  const item = researchItem(source, candidate, {
+    transcript,
+    mainTask: mainTask.text,
+    mainTaskFrom: mainTask.from,
+    verdicts,
+  });
+  return { ...item, meta: { ...item.meta, malformedMonitorLogs: mainTask.malformedLogs } };
 }
 
 const researchArena: Benchmark = {
