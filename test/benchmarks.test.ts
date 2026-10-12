@@ -49,20 +49,25 @@ describe("get", () => {
     vi.useRealTimers();
   });
 
-  it("waits out a 429's Retry-After, then fails on a non-transient status", async () => {
+  it("waits out a 429's Retry-After or RateLimit reset; a 404 fails", async () => {
     vi.useFakeTimers();
     const replies = [
       new Response("slow down", { status: 429, headers: { "retry-after": "30" } }),
       new Response("ok"),
+      new Response("slow down", { status: 429, headers: { ratelimit: '"api";r=0;t=60' } }),
       new Response("nope", { status: 404 }),
     ];
     vi.stubGlobal("fetch", vi.fn(async () => replies.shift()));
     const pending = get("https://example.test/a");
-    await vi.advanceTimersByTimeAsync(29_000);
-    expect(replies).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(replies).toHaveLength(3);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(await (await pending).text()).toBe("ok");
-    await expect(get("https://example.test/b")).rejects.toThrow(/-> 404: nope/);
+    const failing = expect(get("https://example.test/b")).rejects.toThrow(/-> 404: nope/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(replies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await failing;
   });
 });
 

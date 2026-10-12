@@ -14,11 +14,21 @@ const ATTEMPTS = 4;
 /** The longest `Retry-After` waited out; a longer one fails the fetch with the server's reply. */
 const MAX_RETRY_AFTER_S = 300;
 
-/** How long to wait before the next attempt: the server's `Retry-After` when it gives one. */
+/** The Hub's `RateLimit: "<bucket>";r=<remaining>;t=<seconds to reset>` header. */
+const RATE_LIMIT_RESET = /;\s*t=(?<seconds>\d+)/;
+
+/**
+ * How long to wait before the next attempt: the server's `Retry-After`, else the reset its
+ * `RateLimit` header names, else exponential backoff.
+ */
 function backoffMs(response: Response, attempt: number): number {
-  const retryAfter = Number(response.headers.get("retry-after"));
-  if (Number.isFinite(retryAfter) && retryAfter > 0 && retryAfter <= MAX_RETRY_AFTER_S) {
-    return retryAfter * 1000;
+  const retryAfter = Number(response.headers.get("retry-after") ?? NaN);
+  const rateLimit = RATE_LIMIT_RESET.exec(response.headers.get("ratelimit") ?? "");
+  const reset = Number(rateLimit?.groups?.seconds ?? NaN);
+  for (const seconds of [retryAfter, reset]) {
+    if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_RETRY_AFTER_S) {
+      return seconds * 1000 + 1000;
+    }
   }
   return 1000 * 2 ** attempt;
 }
