@@ -89,6 +89,8 @@ function compare(result: ArmResult, reference: ArmResult, costPerTrace: number) 
 const fixed = (x: number, digits = 3) => x.toFixed(digits);
 const interval = ([lo, hi]: [number, number]) => `[${fixed(lo)}, ${fixed(hi)}]`;
 const dollars = (x: number) => (x === 0 ? "$0" : `$${x.toPrecision(3)}`);
+const cheaperBy = (ratio: number) =>
+  Number.isFinite(ratio) ? `${ratio.toFixed(1)}×` : "free (no calls)";
 
 /** One markdown table per dataset, the reference first. */
 export function markdownTable(dataset: string, summaries: readonly ArmSummary[]): string {
@@ -102,7 +104,7 @@ export function markdownTable(dataset: string, summaries: readonly ArmSummary[])
     return (
       `| ${s.arm} | ${s.n} (${s.missing}) | ${fixed(s.auroc)} ${interval(s.aurocCi)} |` +
       ` ${fixed(s.tprAt1)} | ${fixed(s.tprAt5)} | ${dollars(s.costPerTrace)} |` +
-      ` ${vs ? `${vs.costRatio.toFixed(1)}×` : "reference"} |` +
+      ` ${vs ? cheaperBy(vs.costRatio) : "reference"} |` +
       ` ${vs ? `${fixed(vs.delta)} ${interval(vs.deltaCi)}` : "—"} |` +
       ` ${vs ? (vs.matches ? "yes" : "no") : "—"} |`
     );

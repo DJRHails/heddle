@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { evaluateArm } from "../evals/harness.ts";
 import { readItems, type MonitorItem } from "../evals/items.ts";
 import { auroc, bootstrap, pairedAurocDelta, tprAtFpr, wilson } from "../evals/metrics.ts";
-import { cascade, checklist, ensemble, fullTrace, longRead } from "../evals/monitors.ts";
+import { armByName, cascade, checklist, ensemble, fullTrace, longRead } from "../evals/monitors.ts";
 import { requestCost } from "../evals/pricing.ts";
 import { summariseArm } from "../evals/report.ts";
 import type { Backend, BackendRequest } from "../src/index.ts";
@@ -229,6 +229,20 @@ describe("evaluateArm", () => {
     expect(JSON.stringify(withPolicy?.schema)).toContain('"required":["policy"]');
     expect(generic?.system).not.toContain("<behaviour>");
     expect(JSON.stringify(generic?.schema)).toContain('"hidden_goal"');
+  });
+
+  it("the shipped arm reads a benchmark's own verdicts with no model calls", async () => {
+    const { backend, calls } = stubBackend();
+    const withScores = [
+      { ...item("a", 1, 0), meta: { shippedScores: { "gpt-x": 9 } } },
+      { ...item("b", 0, 0), meta: { shippedScores: {} } },
+    ];
+    const result = await evaluateArm("stub", withScores, armByName("shipped:gpt-x"), { backend });
+    expect(calls).toHaveLength(0);
+    expect(result.items.map((r) => [r.score, r.costUsd])).toEqual([
+      [9, 0],
+      [null, 0],
+    ]);
   });
 
   it("summaries compare an arm to the reference on paired items", async () => {

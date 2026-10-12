@@ -273,7 +273,28 @@ export const ARMS: readonly Arm[] = [
   longRead("haiku-5-5-long-read", "claude-haiku-5-5", 40_000),
 ];
 
+/**
+ * The verdicts a benchmark itself ships (`meta.shippedScores[model]`): an external monitor's
+ * scores on the same transcripts, at no cost. It checks the reference — our Opus arm against a
+ * benchmark's published Opus run — and puts the paper's own monitor in the table. Items the
+ * monitor never scored are missing, not benign.
+ */
+export function shipped(model: string): Arm {
+  return {
+    name: `shipped:${model}`,
+    description: `the benchmark's own ${model} verdicts (no model calls)`,
+    monitor: async (_w, item) => {
+      const scores = item.meta?.shippedScores as Record<string, unknown> | undefined;
+      const score = scores?.[model];
+      return typeof score === "number" ? { score } : null;
+    },
+  };
+}
+
+const SHIPPED_PREFIX = "shipped:";
+
 export function armByName(name: string): Arm {
+  if (name.startsWith(SHIPPED_PREFIX)) return shipped(name.slice(SHIPPED_PREFIX.length));
   const arm = ARMS.find((candidate) => candidate.name === name);
   if (!arm) {
     throw new Error(`unknown arm "${name}"; known: ${ARMS.map((a) => a.name).join(", ")}`);

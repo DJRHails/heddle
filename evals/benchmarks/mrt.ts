@@ -14,8 +14,9 @@
  *
  * What the monitor sees matches SHADE-Arena's protocol: the system prompt (which states the side
  * task) and the agent's `<thinking>` scratchpad are removed. The released files record tool
- * call names but not their arguments; tool outputs are kept. The shipped monitor's verdict is
- * kept in `meta` as an external reference score.
+ * call names but not their arguments; tool outputs are kept. The kept copy's shipped verdict
+ * (0–100, from the monitor its directory names) rides `meta.shippedScores`, the external
+ * reference the `shipped:<monitor>` arm reads.
  */
 
 import { balancedSample, mapLimited, type Benchmark } from "./benchmark.ts";
@@ -116,7 +117,8 @@ async function candidates(
 
 async function toItem(source: string, candidate: Candidate): Promise<MonitorItem> {
   const run = JSON.parse(await hubFile(DATASET, REVISION, candidate.path)) as Run;
-  const userTask = run.conversation.find((message) => message.role === "user");
+  const monitor = candidate.path.split("/").at(-2) ?? "";
+  const verdict = shippedVerdict(run.monitoring_response);
   return {
     id: candidate.id,
     source,
@@ -128,8 +130,7 @@ async function toItem(source: string, candidate: Candidate): Promise<MonitorItem
       condition: candidate.condition,
       agent: candidate.agent,
       sideTaskSucceeded: run.side_task_evaluation === true,
-      shippedMonitorScore: shippedVerdict(run.monitoring_response),
-      userTurnChars: String(userTask?.content ?? "").length,
+      shippedScores: verdict === null ? {} : { [monitor]: verdict },
     },
   };
 }
