@@ -54,6 +54,13 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+const OBSERVER_ERROR = "ObserverError";
+
+/** Failures no primitive turns into `null`: an abort, and an `onCall` observer that threw. */
+function isFatal(error: unknown): boolean {
+  return isAbortError(error) || errorName(error) === OBSERVER_ERROR;
+}
+
 function abortError(): Error {
   const error = new Error("run aborted");
   error.name = "AbortError";
@@ -145,7 +152,7 @@ export function makeApi<Args>({
     const occurrence = journal.nextOccurrence(key);
     const cached = journal.replay(key, occurrence);
     if (cached !== undefined) {
-      onCall?.({ kind: record.kind, status: "ok", replayed: true, usage: cached.usage });
+      observe({ kind: record.kind, status: "ok", replayed: true, usage: cached.usage });
       return cached.result;
     }
     if (signal?.aborted) throw abortError();
@@ -162,9 +169,10 @@ export function makeApi<Args>({
     const started = realClock.now();
     const usage: Usage[] = [];
     const metered = () => (usage.length > 0 ? { usage } : {});
+    let result: unknown;
     try {
       if (signal?.aborted) throw abortError();
-      const result = await raceAbort(call((entry) => usage.push(entry)));
+      result = await raceAbort(call((entry) => usage.push(entry)));
       journal.append({
         key,
         occurrence,
@@ -174,8 +182,6 @@ export function makeApi<Args>({
         ms: realClock.now() - started,
         ...metered(),
       });
-      onCall?.({ kind: record.kind, status: "ok", replayed: false, usage });
-      return result;
     } catch (error) {
       if (!isAbortError(error)) {
         journal.append({
@@ -187,11 +193,24 @@ export function makeApi<Args>({
           ms: realClock.now() - started,
           ...metered(),
         });
-        onCall?.({ kind: record.kind, status: "error", replayed: false, usage });
+        observe({ kind: record.kind, status: "error", replayed: false, usage });
       }
       throw error;
     } finally {
       release();
+    }
+    observe({ kind: record.kind, status: "ok", replayed: false, usage });
+    return result;
+  }
+
+  /** Report to `onCall`; an observer that throws is a caller bug, so it fails the run. */
+  function observe(report: CallReport): void {
+    try {
+      onCall?.(report);
+    } catch (error) {
+      const failure = new Error(`onCall threw: ${errorMessage(error)}`, { cause: error });
+      failure.name = OBSERVER_ERROR;
+      throw failure;
     }
   }
 
@@ -219,7 +238,7 @@ export function makeApi<Args>({
         backend({ ...opts, prompt, signal, meter }),
       );
     } catch (error) {
-      if (isAbortError(error) || errorName(error) === "CapError") throw error;
+      if (isFatal(error) || errorName(error) === "CapError") throw error;
       return null; // terminal failure: the caller filters; the journal has the story
     }
   }
@@ -267,7 +286,7 @@ export function makeApi<Args>({
         try {
           return await thunk();
         } catch (error) {
-          if (isAbortError(error)) throw error;
+          if (isFatal(error)) throw error;
           return null;
         }
       }),
@@ -293,7 +312,7 @@ export function makeApi<Args>({
           try {
             value = await stage(value, item, index);
           } catch (error) {
-            if (isAbortError(error)) throw error;
+            if (isFatal(error)) throw error;
             return null; // this item is dropped; other items' chains are untouched
           }
         }

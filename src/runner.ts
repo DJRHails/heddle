@@ -41,7 +41,8 @@ export interface RunOptions<Args = unknown> {
   /**
    * Observes every settled model call, live or replayed, with its metered usage — the cost
    * readout. Called from the issuing call's async context, so AsyncLocalStorage set around a
-   * script stage attributes the call to it.
+   * script stage attributes the call to it. A throw here fails the run rather than the call.
+   * A call cut short by `signal` is not reported.
    */
   onCall?: (call: CallReport) => void;
 }

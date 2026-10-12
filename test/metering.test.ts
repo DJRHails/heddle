@@ -62,6 +62,22 @@ describe("usage metering", () => {
     ]);
   });
 
+  it("an onCall that throws fails the run, without turning the call into a failure", async () => {
+    const journalPath = join(mkdtempSync(join(tmpdir(), "heddle-meter-")), "run.jsonl");
+    const reports: CallReport[] = [];
+    const script = async (w: Workflow) =>
+      w.pipeline(["a"], (item) => w.parallel([() => w.agent(String(item))]));
+    const observer = (call: CallReport) => {
+      reports.push(call);
+      throw new Error("pricing lookup failed");
+    };
+    await expect(run(script, { backend: meteredBackend, journalPath, onCall: observer })).rejects
+      .toThrow(/onCall threw: pricing lookup failed/);
+    expect(reports.map((c) => c.status)).toEqual(["ok"]);
+    const entries = readFileSync(journalPath, "utf8").trim().split("\n");
+    expect(entries.map((line) => (JSON.parse(line) as { status: string }).status)).toEqual(["ok"]);
+  });
+
   it("anthropicBackend meters every Messages request, schema retries included", async () => {
     const reply = (input: unknown) =>
       new Response(
