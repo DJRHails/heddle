@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { safetyItem, UNSAFE_ACTION_POLICY } from "../evals/benchmarks/agent-safety.ts";
 import { balancedSample, mapLimited } from "../evals/benchmarks/benchmark.ts";
+import { get } from "../evals/benchmarks/hf.ts";
 import { BENCHMARKS } from "../evals/benchmarks/index.ts";
 import { PREFERRED_MONITOR, preferredCopy, renderRun } from "../evals/benchmarks/mrt.ts";
 import { validateItem } from "../evals/items.ts";
@@ -34,6 +35,29 @@ describe("mapLimited", () => {
     });
     expect(out).toEqual([50, 10, 30, 20]);
     expect(peak).toBe(2);
+  });
+});
+
+describe("get", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("waits out a 429's Retry-After, then fails on a non-transient status", async () => {
+    vi.useFakeTimers();
+    const replies = [
+      new Response("slow down", { status: 429, headers: { "retry-after": "30" } }),
+      new Response("ok"),
+      new Response("nope", { status: 404 }),
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => replies.shift()));
+    const pending = get("https://example.test/a");
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(replies).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await (await pending).text()).toBe("ok");
+    await expect(get("https://example.test/b")).rejects.toThrow(/-> 404: nope/);
   });
 });
 

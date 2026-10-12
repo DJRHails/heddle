@@ -1,48 +1,51 @@
 /**
  * Fetching from the Hugging Face Hub with no dependency: raw files at a pinned revision
  * (`resolve/<sha>/<path>`, so a converted dataset is reproducible byte for byte), and the
- * datasets-server rows API for parquet-only public datasets. `HF_TOKEN`, when set, is sent on
- * Hub file downloads for gated datasets. Every failure names the URL and the status.
+ * datasets-server rows API for parquet-only public datasets. Every dataset converted here is
+ * public, so no token is sent. Every failure names the URL and the status.
  */
 
 const HUB = "https://huggingface.co";
 const ROWS_API = "https://datasets-server.huggingface.co/rows";
 const PAGE = 100;
 
-function headers(): Record<string, string> {
-  const token = process.env.HF_TOKEN;
-  return token ? { authorization: `Bearer ${token}` } : {};
-}
-
 const TRANSIENT = new Set([429, 500, 502, 503, 504]);
 const ATTEMPTS = 4;
+/** The longest `Retry-After` waited out; a longer one fails the fetch with the server's reply. */
+const MAX_RETRY_AFTER_S = 300;
+
+/** How long to wait before the next attempt: the server's `Retry-After` when it gives one. */
+function backoffMs(response: Response, attempt: number): number {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0 && retryAfter <= MAX_RETRY_AFTER_S) {
+    return retryAfter * 1000;
+  }
+  return 1000 * 2 ** attempt;
+}
 
 /**
- * GET with bounded retries on transient statuses (the Hub's LFS redirects 502 now and then);
- * anything else, or the last transient failure, throws with the URL and status.
+ * GET with bounded retries on transient statuses (the Hub's LFS redirects 502 now and then, and
+ * its rate limits answer 429 with a `Retry-After`); anything else, or the last transient
+ * failure, throws with the URL and status.
  */
-export async function get(url: string, extraHeaders: Record<string, string> = {}): Promise<Response> {
+export async function get(url: string): Promise<Response> {
   for (let attempt = 1; ; attempt += 1) {
-    const response = await fetch(url, { headers: { ...extraHeaders } });
+    const response = await fetch(url);
     if (response.ok) return response;
     const detail = (await response.text()).slice(0, 300);
     if (TRANSIENT.has(response.status) && attempt < ATTEMPTS) {
-      await new Promise((resolveSleep) => setTimeout(resolveSleep, 1000 * 2 ** attempt));
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, backoffMs(response, attempt)));
       continue;
     }
-    const hint = response.status === 401 || response.status === 403 ? " (gated? set HF_TOKEN)" : "";
+    const hint = response.status === 401 || response.status === 403 ? " (gated dataset?)" : "";
     throw new Error(`GET ${url} -> ${response.status}${hint}: ${detail}`);
   }
-}
-
-function hubGet(url: string): Promise<Response> {
-  return get(url, headers());
 }
 
 /** A file from a dataset repo at a pinned revision, as text. */
 export async function hubFile(dataset: string, revision: string, path: string): Promise<string> {
   const url = `${HUB}/datasets/${dataset}/resolve/${revision}/${path}`;
-  return (await hubGet(url)).text();
+  return (await get(url)).text();
 }
 
 /** Parse JSONL text; a bad line names its source and line number. */
@@ -117,7 +120,7 @@ export async function hubTree(
   let url: string | null =
     `${HUB}/api/datasets/${dataset}/tree/${revision}/${path}` + (recursive ? "?recursive=true" : "");
   while (url) {
-    const response = await hubGet(url);
+    const response = await get(url);
     entries.push(...((await response.json()) as TreeEntry[]));
     url = nextPage(response.headers.get("link"));
   }
