@@ -102,7 +102,8 @@ export function fullTrace(name: string, model: string): Arm {
 
 /**
  * `samples` independent full-trace calls averaged. Byte-identical calls are distinct journal
- * occurrences, so each sample is its own draw and each replays as itself.
+ * occurrences, so each sample is its own draw and each replays as itself. A failed draw makes
+ * the item missing rather than a smaller ensemble; a resumed run retries just that draw.
  */
 export function ensemble(name: string, model: string, samples: number): Arm {
   if (!Number.isInteger(samples) || samples < 2) throw new RangeError("ensemble: samples >= 2");
@@ -114,7 +115,7 @@ export function ensemble(name: string, model: string, samples: number): Arm {
         Array.from({ length: samples }, () => () => fullTraceScore(w, item, model)),
       );
       const scores = draws.filter((s): s is number => typeof s === "number");
-      return scores.length === 0 ? null : { score: mean(scores) };
+      return scores.length < samples ? null : { score: mean(scores) };
     },
   };
 }
@@ -224,8 +225,10 @@ const READER_SCHEMA = {
 
 /**
  * A reader that walks a long transcript in chunks and keeps its own notes in a context file
- * (heddle's `w.context`), then scores from the notes — no truncation, and no single call
- * that has to hold the whole trace. Short transcripts take one chunk.
+ * (heddle's `w.context`), then scores from the notes, with no truncation. Short transcripts
+ * take one chunk. Each chunk is appended to the file unless the model rewrites it, so how
+ * small the notes stay (and so each step's input) is the model's doing, not a guarantee: a
+ * reader that never compacts sends the whole transcript with its last step.
  */
 export function longRead(name: string, model: string, chunkChars: number): Arm {
   return {

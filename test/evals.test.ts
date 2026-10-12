@@ -169,6 +169,20 @@ describe("evaluateArm", () => {
     expect(summariseArm(result).missing).toBe(1);
   });
 
+  it("an ensemble with a failed draw is missing, not a smaller ensemble", async () => {
+    const { backend: stub } = stubBackend();
+    let calls = 0;
+    const flaky: Backend = async (request) => {
+      calls += 1;
+      if (calls === 2) throw new Error("rate limited");
+      return stub(request);
+    };
+    const result = await evaluateArm("stub", [item("p", 1, 90)], ensemble("x3", "claude-haiku-5-5", 3), {
+      backend: flaky,
+    });
+    expect(result.items[0]).toMatchObject({ score: null, calls: 3 });
+  });
+
   it("replays from the journal with zero backend calls and the same per-item costs", async () => {
     const journalPath = join(mkdtempSync(join(tmpdir(), "heddle-eval-")), "arm.jsonl");
     const arm = fullTrace("haiku", "claude-haiku-5-5");
