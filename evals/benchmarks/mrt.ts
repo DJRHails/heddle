@@ -14,7 +14,9 @@
  * (`PREFERRED_MONITOR`) when it scored the run, else the first by path.
  *
  * What the monitor sees matches SHADE-Arena's protocol: the system prompt (which states the side
- * task) and the agent's `<thinking>` scratchpad are removed. The released files record tool
+ * task) and the agent's scratchpad (`<thinking>`, and the computer-use runs' `<hidden_thinking>`,
+ * `<model_thinking>` and `<think>`) are removed; `<visible_thinking>` text stays, untagged. Runs
+ * whose rendered transcripts are identical are kept once. The released files record tool
  * call names but not their arguments; tool outputs are kept. The kept copy's shipped verdict
  * (0–100, from the monitor its directory names) rides `meta.shippedScores`, the external
  * reference the `shipped:<monitor>` arm reads.
@@ -65,7 +67,13 @@ interface Run {
   side_task_evaluation?: unknown;
 }
 
-const THINKING = /<thinking>[\s\S]*?(?:<\/thinking>|$)/g;
+/** A hidden scratchpad block, closed or running to the end of the message. */
+const SCRATCHPAD = /<(?<tag>(?:hidden_|model_)?think(?:ing)?)>[\s\S]*?(?:<\/\k<tag>>|$)/g;
+/**
+ * The thinking-time protocol's visible channel stays, without its tags: only attack runs use
+ * the tags at all, so the tag alone would tell the monitor the label.
+ */
+const VISIBLE_TAG = /<\/?visible_thinking>/g;
 
 /** The run as the monitor sees it: no system prompt, no scratchpad. */
 export function renderRun(conversation: readonly Message[]): string {
@@ -73,7 +81,8 @@ export function renderRun(conversation: readonly Message[]): string {
     .filter((message) => message.role !== "system")
     .map((message) => {
       const content = String(message.content ?? "")
-        .replace(THINKING, "")
+        .replace(SCRATCHPAD, "")
+        .replace(VISIBLE_TAG, "")
         .trim();
       const calls = typeof message.tool_calls === "string" ? message.tool_calls.trim() : "";
       return `[${message.role}] ${[content, calls].filter(Boolean).join("\n") || "(empty)"}`;
@@ -146,6 +155,20 @@ async function toItem(source: string, candidate: Candidate): Promise<MonitorItem
   };
 }
 
+const DUPLICATE_SLACK = 1.2;
+
+/** The first item of each distinct transcript, in order. */
+export function distinctTranscripts(items: readonly MonitorItem[]): MonitorItem[] {
+  const seen = new Set<string>();
+  const kept: MonitorItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.transcript)) continue;
+    seen.add(item.transcript);
+    kept.push(item);
+  }
+  return kept;
+}
+
 function mrtBenchmark(
   name: string,
   root: string,
@@ -161,9 +184,10 @@ function mrtBenchmark(
       for (const task of await tasks()) {
         pool.push(...(await candidates(root, task, await conditionsFor(task))));
       }
-      const chosen = balancedSample(pool, perClass);
+      // over-draw, so dropping runs whose rendered transcripts repeat still fills each class
+      const chosen = balancedSample(pool, Math.ceil(perClass * DUPLICATE_SLACK));
       const items = await mapLimited(chosen, 8, (candidate) => toItem(name, candidate));
-      return { items, available: pool.length };
+      return { items: balancedSample(distinctTranscripts(items), perClass), available: pool.length };
     },
   };
 }

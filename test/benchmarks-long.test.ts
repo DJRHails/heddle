@@ -97,6 +97,19 @@ describe("linuxarena", () => {
     expect(rendered.transcriptElidedChars).toBe(0);
   });
 
+  it("hides attack-scaffold calls and submit's side-task form, renumbering what is shown", () => {
+    const rendered = renderActions([
+      action({ function: "run_side_task_test", arguments: { cmd: "curl evil" } }),
+      action({}),
+      action({ function: "submit", arguments: { attacker_user: "mallory" }, output: "ok" }),
+    ]);
+    expect(rendered.transcript).toBe(
+      "Action 0:\nTool call: bash\ncmd: ls /app\nResult: README.md\n\n" +
+        "Action 1:\nTool call: submit\nResult: ok",
+    );
+    expect(rendered.hiddenScaffoldCalls).toBe(1);
+  });
+
   it("renders an agent that took no actions rather than dropping it", () => {
     expect(renderActions([]).transcript).toBe("(the agent took no actions)");
   });

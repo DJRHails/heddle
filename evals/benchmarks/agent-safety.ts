@@ -9,7 +9,10 @@
  * - ASSEBench (Luo et al., AgentAuditor, arXiv 2506.00641): 1,476 safety + 817 security records,
  *   HF Atarogic/ASSEBench (Apache-2.0).
  *
- * The annotators' `risk_description` is dropped: it states the label.
+ * The annotators' `risk_description` is dropped: it states the label. So is the success
+ * banner of ASSEBench-security's simulated attacker tools (`ATTACKER_BANNER`). R-Judge's source
+ * subsets differ in format in ways that track the label ("Action Input:" in most unsafe
+ * records, a closing "Final Answer" in most safe ones); that is left as upstream ships it.
  */
 
 import { get, hubFile } from "./hf.ts";
@@ -47,12 +50,25 @@ export interface SafetyRecord {
   attack_type?: string;
 }
 
+/**
+ * Agent Security Bench's simulated attacker tools announce themselves ("You have used the
+ * attacker tool X. You have achieved the attacker goal: Successfully …"), which only unsafe
+ * records contain. The announcement goes; the effect it reports stays.
+ */
+const ATTACKER_BANNER =
+  /You have used the attacker tool [^.]*\.\s*You have achieved the attacker goal:\s*/g;
+
+function scrubbed(value: string | null | undefined): string {
+  return (value ?? "").replace(ATTACKER_BANNER, "").trim();
+}
+
 function renderTurn(turn: SafetyTurn): string {
   if (turn.role === "agent") {
-    const thought = turn.thought?.trim() ? `[agent thought] ${turn.thought.trim()}\n` : "";
-    return `${thought}[agent action] ${turn.action?.trim() || "(none)"}`;
+    const thought = scrubbed(turn.thought);
+    const prefix = thought ? `[agent thought] ${thought}\n` : "";
+    return `${prefix}[agent action] ${scrubbed(turn.action) || "(none)"}`;
   }
-  return `[${turn.role}] ${turn.content?.trim() || "(empty)"}`;
+  return `[${turn.role}] ${scrubbed(turn.content) || "(empty)"}`;
 }
 
 /** The agent's profile, then every episode's turns in order. */
@@ -88,8 +104,8 @@ function assebench(config: "safety" | "security"): Benchmark {
     provenance: `ASSEBench ${config} (AgentAuditor, arXiv 2506.00641); HF ${ASSEBENCH}`,
     licence: "Apache-2.0",
     fetch: async (perClass) => {
-      const text = await hubFile(ASSEBENCH, ASSEBENCH_REVISION, `dataset/AgentJudge-${config}.json`);
-      const records = JSON.parse(text) as SafetyRecord[];
+      const path = `dataset/AgentJudge-${config}.json`;
+      const records = JSON.parse(await hubFile(ASSEBENCH, ASSEBENCH_REVISION, path)) as SafetyRecord[];
       return sampled(
         records.map((record) => safetyItem("assebench", config, record)),
         perClass,
@@ -100,7 +116,16 @@ function assebench(config: "safety" | "security"): Benchmark {
 
 /** R-Judge's per-scenario files, by domain directory. */
 const R_JUDGE_FILES: Record<string, string[]> = {
-  Application: ["chatbot", "dh_app", "ds_app", "mail", "medical", "phone", "productivity", "socialapp"],
+  Application: [
+    "chatbot",
+    "dh_app",
+    "ds_app",
+    "mail",
+    "medical",
+    "phone",
+    "productivity",
+    "socialapp",
+  ],
   Finance: ["bitcoin", "dh_finance", "ds_finance", "moneymanagement", "webshop"],
   IoT: ["household", "phone_iot", "trafficdispatch"],
   Program: [
