@@ -17,9 +17,25 @@ export interface AgentOptions {
   maxTokens?: number;
 }
 
+/** What one model request consumed, as the provider reported it. */
+export interface Usage {
+  /** The version-qualified model id that served the request. */
+  model: string;
+  /** Uncached input tokens. */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+/** Where a backend or judge reports usage: once per provider request, retries included. */
+export type Meter = (usage: Usage) => void;
+
 export interface BackendRequest extends AgentOptions {
   prompt: string;
   signal?: AbortSignal;
+  /** Report each provider request's usage here; the scheduler journals it with the call. */
+  meter?: Meter;
 }
 
 /**
@@ -84,6 +100,8 @@ export interface JudgeRequest {
   state: unknown;
   questions: Record<string, Question>;
   signal?: AbortSignal;
+  /** Report each provider request's usage here, as `BackendRequest.meter`. */
+  meter?: Meter;
 }
 
 export interface JudgeResponse {
@@ -207,3 +225,14 @@ export interface Workflow<Args = unknown> {
 export type Script<Args = unknown, Result = unknown> = (
   w: Workflow<Args>,
 ) => Result | Promise<Result>;
+
+/**
+ * One settled model call as `run({onCall})` observes it: live or replayed, with the usage it
+ * cost when it ran (a replayed call reports the usage its journal entry recorded).
+ */
+export interface CallReport {
+  kind: "agent" | "judge";
+  status: "ok" | "error";
+  replayed: boolean;
+  usage: Usage[];
+}

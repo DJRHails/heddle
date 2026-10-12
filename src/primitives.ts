@@ -40,10 +40,13 @@ import type {
   AgentOptions,
   AnswerFor,
   Backend,
+  CallReport,
   Judge,
+  Meter,
   Question,
   Stage,
   Thunk,
+  Usage,
   Workflow,
 } from "./types.ts";
 
@@ -73,6 +76,8 @@ export interface SchedulerOptions<Args> {
   maxAgents: number;
   concurrency: number;
   args: Args;
+  /** Observes every settled call, live or replayed (see `CallReport`). */
+  onCall?: (call: CallReport) => void;
 }
 
 export function makeApi<Args>({
@@ -83,6 +88,7 @@ export function makeApi<Args>({
   maxAgents,
   concurrency,
   args,
+  onCall,
 }: SchedulerOptions<Args>): Workflow<Args> {
   let inFlight = 0;
   let launched = 0;
@@ -127,16 +133,21 @@ export function makeApi<Args>({
    * Settle one model call through the shared scheduler: replay from the journal when cached,
    * else enforce the cap, take a slot, run `call`, and journal the outcome. Rethrows failures
    * (journaled as status "error"); callers decide whether that becomes null or propagates.
-   * `record` is the journal entry's descriptive part (what was asked, and of whom).
+   * `record` is the journal entry's descriptive part (what was asked, and of whom). `call`
+   * receives the meter its provider requests report usage to; the usage is journaled with the
+   * outcome and reported to `onCall`.
    */
   async function settle(
     key: string,
     record: JournalRecord,
-    call: () => Promise<unknown>,
+    call: (meter: Meter) => Promise<unknown>,
   ): Promise<unknown> {
     const occurrence = journal.nextOccurrence(key);
     const cached = journal.replay(key, occurrence);
-    if (cached !== undefined) return cached.result;
+    if (cached !== undefined) {
+      onCall?.({ kind: record.kind, status: "ok", replayed: true, usage: cached.usage });
+      return cached.result;
+    }
     if (signal?.aborted) throw abortError();
     launched += 1;
     if (launched > maxAgents) {
@@ -149,9 +160,11 @@ export function makeApi<Args>({
     }
     await acquire();
     const started = realClock.now();
+    const usage: Usage[] = [];
+    const metered = () => (usage.length > 0 ? { usage } : {});
     try {
       if (signal?.aborted) throw abortError();
-      const result = await raceAbort(call());
+      const result = await raceAbort(call((entry) => usage.push(entry)));
       journal.append({
         key,
         occurrence,
@@ -159,7 +172,9 @@ export function makeApi<Args>({
         status: "ok",
         result,
         ms: realClock.now() - started,
+        ...metered(),
       });
+      onCall?.({ kind: record.kind, status: "ok", replayed: false, usage });
       return result;
     } catch (error) {
       if (!isAbortError(error)) {
@@ -170,7 +185,9 @@ export function makeApi<Args>({
           status: "error",
           error: errorMessage(error),
           ms: realClock.now() - started,
+          ...metered(),
         });
+        onCall?.({ kind: record.kind, status: "error", replayed: false, usage });
       }
       throw error;
     } finally {
@@ -198,8 +215,8 @@ export function makeApi<Args>({
       ...(context === undefined ? {} : { context }),
     };
     try {
-      return await settle(callKey(prompt, opts), record, () =>
-        backend({ ...opts, prompt, signal }),
+      return await settle(callKey(prompt, opts), record, (meter) =>
+        backend({ ...opts, prompt, signal, meter }),
       );
     } catch (error) {
       if (isAbortError(error) || errorName(error) === "CapError") throw error;
@@ -218,8 +235,8 @@ export function makeApi<Args>({
     }
     const record: JournalRecord = { kind: "judge", state, question, model: judge.model ?? null };
     const key = judgeKey(state, question, judge.model);
-    const response = (await settle(key, record, () =>
-      judge({ state, questions: { q: question }, signal }),
+    const response = (await settle(key, record, (meter) =>
+      judge({ state, questions: { q: question }, signal, meter }),
     )) as { answers?: Record<string, { type?: string }> } | null | undefined;
     const answer = response?.answers?.q;
     if (!answer || answer.type !== question.type) {

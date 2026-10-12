@@ -17,7 +17,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
-import type { AgentOptions, Question } from "./types.ts";
+import type { AgentOptions, Question, Usage } from "./types.ts";
 
 /** What was asked, and of whom. */
 export type JournalRecord =
@@ -27,9 +27,19 @@ export type JournalRecord =
 /** How it went. */
 export type JournalOutcome = { status: "ok"; result: unknown } | { status: "error"; error: string };
 
-/** One settled model call, as the scheduler hands it to the journal. */
+/**
+ * One settled model call, as the scheduler hands it to the journal. `usage` is what the call's
+ * provider requests consumed, when the backend or judge meters them; it rides the cached entry
+ * so a replayed call still knows what it cost.
+ */
 export type SettledCall = JournalRecord &
-  JournalOutcome & { key: string; occurrence: number; ms: number };
+  JournalOutcome & { key: string; occurrence: number; ms: number; usage?: Usage[] };
+
+/** A cached success: the result and the usage it cost when it ran. */
+export interface Replayed {
+  result: unknown;
+  usage: Usage[];
+}
 
 /** One journal line: a settled call with its sequence number. */
 export type JournalEntry = SettledCall & { seq: number };
@@ -67,7 +77,7 @@ export class Journal {
   readonly path: string | null;
   seq = 0;
   /** key -> cached results in occurrence order (only status "ok" entries). */
-  private readonly cache = new Map<string, Array<{ result: unknown } | undefined>>();
+  private readonly cache = new Map<string, Array<Replayed | undefined>>();
   /** key -> how many occurrences this run has consumed (replay) or produced (live). */
   private readonly consumed = new Map<string, number>();
 
@@ -85,7 +95,7 @@ export class Journal {
           occurrences = [];
           this.cache.set(entry.key, occurrences);
         }
-        occurrences[entry.occurrence] = { result: entry.result };
+        occurrences[entry.occurrence] = { result: entry.result, usage: entry.usage ?? [] };
       }
     }
   }
@@ -98,7 +108,7 @@ export class Journal {
   }
 
   /** A cached success for (key, occurrence), or undefined. */
-  replay(key: string, occurrence: number): { result: unknown } | undefined {
+  replay(key: string, occurrence: number): Replayed | undefined {
     return this.cache.get(key)?.[occurrence];
   }
 

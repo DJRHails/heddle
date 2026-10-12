@@ -13,6 +13,7 @@ export type {
   AnswerFor,
   Backend,
   BackendRequest,
+  CallReport,
   ChoiceAnswer,
   ChoiceQuestion,
   ContextFile,
@@ -21,6 +22,7 @@ export type {
   Instructions,
   JsonSchema,
   Judge,
+  Meter,
   JudgeRequest,
   JudgeResponse,
   NoulAnswer,
@@ -32,5 +34,6 @@ export type {
   Stage,
   StepOptions,
   Thunk,
+  Usage,
   Workflow,
 } from "./types.ts";

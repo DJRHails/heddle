@@ -19,7 +19,7 @@ import { installDeterminismGuards } from "./determinism.ts";
 import { Journal } from "./journal.ts";
 import { llmJudge } from "./judges/llm.ts";
 import { makeApi } from "./primitives.ts";
-import type { Backend, Judge, Script } from "./types.ts";
+import type { Backend, CallReport, Judge, Script } from "./types.ts";
 
 export interface RunOptions<Args = unknown> {
   /** Writes: the model call behind `agent`. Required. */
@@ -38,6 +38,12 @@ export interface RunOptions<Args = unknown> {
   concurrency?: number;
   /** Passed through to the script verbatim as `w.args`. */
   args?: Args;
+  /**
+   * Observes every settled model call, live or replayed, with its metered usage — the cost
+   * readout. Called from the issuing call's async context, so AsyncLocalStorage set around a
+   * script stage attributes the call to it.
+   */
+  onCall?: (call: CallReport) => void;
 }
 
 function defaultConcurrency(): number {
@@ -73,6 +79,7 @@ export async function run(
     maxAgents: options.maxAgents ?? 1000,
     concurrency: options.concurrency ?? defaultConcurrency(),
     args: options.args,
+    onCall: options.onCall,
   });
   let entry: unknown = script;
   if (typeof script === "string") {
