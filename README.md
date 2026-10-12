@@ -235,9 +235,13 @@ Everything is typed: a script takes `Workflow<Args>` and the types below are exp
 strips types natively, so `node script.ts` needs no build step, and the package ships `dist/`
 (built by `tsc`, with declarations) for consumers.
 
-- `run(scriptPathOrFn, { backend, judge?, journalPath?, resume?, signal?, maxAgents?, concurrency?, args? })`
+- `run(scriptPathOrFn, { backend, judge?, journalPath?, resume?, signal?, maxAgents?, concurrency?, args?, onCall? })`
   → the script's return value (typed when given the function; `unknown` from a path). `judge`
-  defaults to `llmJudge(backend)`.
+  defaults to `llmJudge(backend)`. `onCall` observes every settled model call, live or replayed,
+  as `{kind, status, replayed, usage}`. It runs in the issuing call's async context, so an
+  `AsyncLocalStorage` scope around a stage attributes cost per item. An `onCall` that throws
+  fails the run (no primitive turns it into `null`); the call itself stays journaled as it
+  settled. Spend on a call cut short by `signal` is not reported.
 - `w.agent(prompt, { system?, model?, maxTokens? })` → the final text, or `null` on terminal
   failure (journaled). `w.agent<T>(prompt, { schema, … })` → `T | null`: the schema guarantees
   the shape and `T` names it.
@@ -258,9 +262,13 @@ strips types natively, so `node script.ts` needs no build step, and the package 
   on terminal failure (file untouched). `file.step<T>(observation, { schema })` → `T | null`.
   `file.text` is the live file and `file.steps` counts settled steps.
 - Backends (`Backend`) are plain async functions `({prompt, system, schema, model, maxTokens,
-  signal}) → result`; `anthropicBackend` drives the Messages API directly (fetch, zero SDK).
-  The Agent SDK drops in behind the same signature when tool-using subagents are needed.
-- Judges (`Judge`) are plain async functions `({state, questions, signal}) → {answers}` in
+  signal, meter}) → result`; `anthropicBackend` drives the Messages API directly (fetch, zero SDK).
+  The Agent SDK drops in behind the same signature when tool-using subagents are needed. A
+  backend that can measure cost reports each provider request to `meter` as a `Usage`
+  (`{model, inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?}`).
+  `anthropicBackend` meters every Messages request, schema retries included. The usage is
+  journaled with the call, so a replayed call still reports what it cost.
+- Judges (`Judge`) are plain async functions `({state, questions, signal, meter}) → {answers}` in
   Jev's request and answer shapes, with a `.model` property that enters the journal key:
   Jev's `judge` and the emulated `llmJudge` (`heddle/judges/jev`, `heddle/judges/llm`).
 
@@ -302,12 +310,30 @@ ANTHROPIC_API_KEY=... node examples/run-long-read.ts paper.txt "your question"
 filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for your key,
 `set -a; . ./.env.shared; set +a` loads it.
 
+## Monitor evals
+
+[`evals/`](evals/README.md) asks whether a heddle program built from cheap calls can rank agent
+transcripts the way a full-trace `claude-opus-4-8` monitor does, and at what cost. It has:
+
+- converters giving fourteen datasets from nine public monitoring benchmarks (sabotage,
+  unsafe actions, backdoors, sycophancy, CoT monitoring), plus sluice's task-fidelity bank;
+- six cheap monitor arms against the Opus reference;
+- a report of AUROC, TPR at low FPR and metered cost per verdict.
+
+It is built and verified offline, but not yet run live.
+
 ## Validation
 
-- `npm run check` — `tsc --noEmit` over `src`, `test` and `examples` (strict, with
+- `npm run check` — `tsc --noEmit` over `src`, `test`, `examples` and `evals` (strict, with
   `noUncheckedIndexedAccess` and `erasableSyntaxOnly`, so every file also runs under Node's
   type stripping), `oxlint`, then the tests. `npm run build` emits `dist/` with declarations.
-- `npm test` — 37 tests against stub backends and judges. Primitives: pipeline interleaving
+- `npm test` — 107 tests against stub backends and judges, mocked fetch and fixture records. The
+  monitor-eval tests (metrics, pricing, the harness's cost attribution, each arm, each
+  converter's rendering and label checks) are summarised in [`evals/README.md`](evals/README.md);
+  the rest cover the library. Metering: usage reported to `onCall` live and again on replay
+  from the journal, failed calls and judgments metered, schema retries in `anthropicBackend`
+  metered, a throwing `onCall` failing the run without un-settling the call. Primitives:
+  pipeline interleaving
   proven by advancing one item to stage 3 while another's stage-1 call is still pending;
   `parallel` null-on-failure without rejection; thunks-vs-promises `TypeError`; determinism
   guards throwing (and restoring); resume replaying unchanged calls and re-running only the

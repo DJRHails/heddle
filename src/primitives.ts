@@ -40,15 +40,25 @@ import type {
   AgentOptions,
   AnswerFor,
   Backend,
+  CallReport,
   Judge,
+  Meter,
   Question,
   Stage,
   Thunk,
+  Usage,
   Workflow,
 } from "./types.ts";
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+const OBSERVER_ERROR = "ObserverError";
+
+/** Failures no primitive turns into `null`: an abort, and an `onCall` observer that threw. */
+function isFatal(error: unknown): boolean {
+  return isAbortError(error) || errorName(error) === OBSERVER_ERROR;
 }
 
 function abortError(): Error {
@@ -73,6 +83,8 @@ export interface SchedulerOptions<Args> {
   maxAgents: number;
   concurrency: number;
   args: Args;
+  /** Observes every settled call, live or replayed (see `CallReport`). */
+  onCall?: (call: CallReport) => void;
 }
 
 export function makeApi<Args>({
@@ -83,6 +95,7 @@ export function makeApi<Args>({
   maxAgents,
   concurrency,
   args,
+  onCall,
 }: SchedulerOptions<Args>): Workflow<Args> {
   let inFlight = 0;
   let launched = 0;
@@ -127,16 +140,21 @@ export function makeApi<Args>({
    * Settle one model call through the shared scheduler: replay from the journal when cached,
    * else enforce the cap, take a slot, run `call`, and journal the outcome. Rethrows failures
    * (journaled as status "error"); callers decide whether that becomes null or propagates.
-   * `record` is the journal entry's descriptive part (what was asked, and of whom).
+   * `record` is the journal entry's descriptive part (what was asked, and of whom). `call`
+   * receives the meter its provider requests report usage to; the usage is journaled with the
+   * outcome and reported to `onCall`.
    */
   async function settle(
     key: string,
     record: JournalRecord,
-    call: () => Promise<unknown>,
+    call: (meter: Meter) => Promise<unknown>,
   ): Promise<unknown> {
     const occurrence = journal.nextOccurrence(key);
     const cached = journal.replay(key, occurrence);
-    if (cached !== undefined) return cached.result;
+    if (cached !== undefined) {
+      observe({ kind: record.kind, status: "ok", replayed: true, usage: cached.usage });
+      return cached.result;
+    }
     if (signal?.aborted) throw abortError();
     launched += 1;
     if (launched > maxAgents) {
@@ -149,9 +167,12 @@ export function makeApi<Args>({
     }
     await acquire();
     const started = realClock.now();
+    const usage: Usage[] = [];
+    const metered = () => (usage.length > 0 ? { usage } : {});
+    let result: unknown;
     try {
       if (signal?.aborted) throw abortError();
-      const result = await raceAbort(call());
+      result = await raceAbort(call((entry) => usage.push(entry)));
       journal.append({
         key,
         occurrence,
@@ -159,8 +180,8 @@ export function makeApi<Args>({
         status: "ok",
         result,
         ms: realClock.now() - started,
+        ...metered(),
       });
-      return result;
     } catch (error) {
       if (!isAbortError(error)) {
         journal.append({
@@ -170,11 +191,26 @@ export function makeApi<Args>({
           status: "error",
           error: errorMessage(error),
           ms: realClock.now() - started,
+          ...metered(),
         });
+        observe({ kind: record.kind, status: "error", replayed: false, usage });
       }
       throw error;
     } finally {
       release();
+    }
+    observe({ kind: record.kind, status: "ok", replayed: false, usage });
+    return result;
+  }
+
+  /** Report to `onCall`; an observer that throws is a caller bug, so it fails the run. */
+  function observe(report: CallReport): void {
+    try {
+      onCall?.(report);
+    } catch (error) {
+      const failure = new Error(`onCall threw: ${errorMessage(error)}`, { cause: error });
+      failure.name = OBSERVER_ERROR;
+      throw failure;
     }
   }
 
@@ -198,11 +234,11 @@ export function makeApi<Args>({
       ...(context === undefined ? {} : { context }),
     };
     try {
-      return await settle(callKey(prompt, opts), record, () =>
-        backend({ ...opts, prompt, signal }),
+      return await settle(callKey(prompt, opts), record, (meter) =>
+        backend({ ...opts, prompt, signal, meter }),
       );
     } catch (error) {
-      if (isAbortError(error) || errorName(error) === "CapError") throw error;
+      if (isFatal(error) || errorName(error) === "CapError") throw error;
       return null; // terminal failure: the caller filters; the journal has the story
     }
   }
@@ -218,8 +254,8 @@ export function makeApi<Args>({
     }
     const record: JournalRecord = { kind: "judge", state, question, model: judge.model ?? null };
     const key = judgeKey(state, question, judge.model);
-    const response = (await settle(key, record, () =>
-      judge({ state, questions: { q: question }, signal }),
+    const response = (await settle(key, record, (meter) =>
+      judge({ state, questions: { q: question }, signal, meter }),
     )) as { answers?: Record<string, { type?: string }> } | null | undefined;
     const answer = response?.answers?.q;
     if (!answer || answer.type !== question.type) {
@@ -250,7 +286,7 @@ export function makeApi<Args>({
         try {
           return await thunk();
         } catch (error) {
-          if (isAbortError(error)) throw error;
+          if (isFatal(error)) throw error;
           return null;
         }
       }),
@@ -276,7 +312,7 @@ export function makeApi<Args>({
           try {
             value = await stage(value, item, index);
           } catch (error) {
-            if (isAbortError(error)) throw error;
+            if (isFatal(error)) throw error;
             return null; // this item is dropped; other items' chains are untouched
           }
         }

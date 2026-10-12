@@ -12,7 +12,7 @@
 
 import { realClock } from "../determinism.ts";
 import { MAX_SCHEMA_RETRIES, schemaErrors } from "../schema.ts";
-import type { Backend, JsonSchema } from "../types.ts";
+import type { Backend, JsonSchema, Meter } from "../types.ts";
 import { postJson } from "./transport.ts";
 
 const API_URL = "https://api.anthropic.com/v1/messages";
@@ -25,6 +25,12 @@ const RETURN_VALUE_CONTRACT =
 /** The parts of a Messages API reply this backend reads. */
 interface MessagesReply {
   content: ContentBlock[];
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+  };
 }
 
 type ContentBlock =
@@ -34,16 +40,34 @@ type ContentBlock =
 
 type MessageParam = { role: "user" | "assistant"; content: string | unknown[] };
 
-function postMessages(
-  body: Record<string, unknown>,
-  { apiKey, signal }: { apiKey: string; signal: AbortSignal | undefined },
+/** What every request of one backend call shares: the key, the abort, and the usage meter. */
+interface Connection {
+  apiKey: string;
+  signal: AbortSignal | undefined;
+  meter: Meter | undefined;
+}
+
+/** POST one Messages request and report its usage, so schema retries are metered too. */
+async function postMessages(
+  body: { model: string } & Record<string, unknown>,
+  { apiKey, signal, meter }: Connection,
 ): Promise<MessagesReply> {
-  return postJson<MessagesReply>(API_URL, {
+  const reply = await postJson<MessagesReply>(API_URL, {
     headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body,
     signal,
     label: "anthropic",
   });
+  if (meter && reply.usage) {
+    meter({
+      model: body.model,
+      inputTokens: reply.usage.input_tokens ?? 0,
+      outputTokens: reply.usage.output_tokens ?? 0,
+      cacheReadTokens: reply.usage.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: reply.usage.cache_creation_input_tokens ?? 0,
+    });
+  }
+  return reply;
 }
 
 function isText(block: ContentBlock): block is { type: "text"; text: string } {
@@ -68,9 +92,10 @@ export function anthropicBackend({
   // Touch the real clock once so the reference exists before determinism guards install.
   void realClock.now;
 
-  return async function backend({ prompt, system, schema, model, maxTokens, signal }) {
+  return async function backend({ prompt, system, schema, model, maxTokens, signal, meter }) {
     const resolvedModel = model ?? defaultModel;
     const budget = maxTokens ?? 2048;
+    const connection = { apiKey, signal, meter };
 
     if (!schema) {
       const body = {
@@ -79,14 +104,14 @@ export function anthropicBackend({
         system: system ? `${system}\n\n${RETURN_VALUE_CONTRACT}` : RETURN_VALUE_CONTRACT,
         messages: [{ role: "user", content: prompt }],
       };
-      const reply = await postMessages(body, { apiKey, signal });
+      const reply = await postMessages(body, connection);
       return reply.content
         .filter(isText)
         .map((block) => block.text)
         .join("\n")
         .trim();
     }
-    return structured({ prompt, system, schema, model: resolvedModel, budget, apiKey, signal });
+    return structured({ prompt, system, schema, model: resolvedModel, budget, connection });
   };
 }
 
@@ -96,16 +121,14 @@ async function structured({
   schema,
   model,
   budget,
-  apiKey,
-  signal,
+  connection,
 }: {
   prompt: string;
   system: string | undefined;
   schema: JsonSchema;
   model: string;
   budget: number;
-  apiKey: string;
-  signal: AbortSignal | undefined;
+  connection: Connection;
 }): Promise<unknown> {
   const tool = {
     name: "structured_output",
@@ -123,7 +146,7 @@ async function structured({
         tools: [tool],
         tool_choice: { type: "tool", name: "structured_output" },
       },
-      { apiKey, signal },
+      connection,
     );
     const call = reply.content.find(isToolUse);
     const payload = call?.input;
