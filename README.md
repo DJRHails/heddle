@@ -6,46 +6,14 @@ real code, and only the leaf calls are model-driven. A heddle is the loom part t
 selected warp threads so the shuttle can pass: the orchestrator decides which strands lift;
 the model is the shuttle.
 
-**Status: early, single-author prototype, actively developed.** Version 0.1.0, three commits
-(2026-08-21 to 2026-10-02). It is not published to npm, and the npm name `heddle` belongs to an
-unrelated package, so install from GitHub ([Install](#install)). The first commit is a
-reconstruction of a build that was reviewed in an ephemeral container
-([Provenance](#provenance)).
+heddle is a small TypeScript library (Node 22.18+, one runtime dependency, `ajv`). It gives a
+script three orchestration primitives (`agent`, `parallel`, `pipeline`), three decision
+primitives (`feels`, `match`, `judge`), and `w.context`, a context file the model manages
+itself. Every call is journaled, and re-running a script replays the calls whose prompt and
+options are unchanged, so editing a late stage re-runs only that stage and what follows from it.
 
-## Key takeaways
-
-- **What it is.** A TypeScript library (Node 22.18+, one runtime dependency, `ajv`). It provides
-  three orchestration primitives (`agent`, `parallel`, `pipeline`), three decision primitives
-  (`feels`, `match`, `judge`), and `w.context`, a context file that the model manages itself.
-  → [API](#api)
-- **Re-running a script replays unchanged calls from the journal.** Calls are keyed on prompt
-  plus semantic options, not on journal order, so editing one late stage re-runs only that
-  stage and what derives from it. [confidence: ~90% for the unit-tested behaviour — resume
-  tests in `test/primitives.test.ts`; ~70% for the live "byte-identical, zero new calls" reruns,
-  which are single author-reported runs whose journals are not committed]
-  → [Design review](#design-review-what-this-is-and-what-it-deliberately-is-not)
-- **A failed leaf is `null`, never a finding.** `parallel`/`pipeline` isolate failures to one
-  item. A tally has three outcomes, and a judgment that can't be obtained throws rather than
-  reading as "unsure". [confidence: ~90% — tests; the three-outcome tally is a convention the
-  example follows, not something the library enforces]
-  → [Design review](#design-review-what-this-is-and-what-it-deliberately-is-not)
-- **Verified by a local suite; no CI.** `npm run check` (strict `tsc`, `oxlint`, 37 vitest tests
-  against stub backends and judges) passes, re-run in this audit on 2026-10-17. There is no
-  `.github/workflows`. Live validation is a handful of single runs on Haiku 4.5 (and Jev) for
-  three examples, reported in this README and in PRs #1 and #2. → [Validation](#validation)
-- **Not a sandbox.** Scripts are trusted code running in-process. The determinism guards are a
-  heuristic, and the emulated judge's probabilities are not calibrated.
-  → [Status, scope and limitations](#status-scope-and-limitations)
-
-**What the design rests on.** Content-addressed replay is only sound if the script itself is
-deterministic: the same inputs and the same journaled results must produce the same calls.
-The determinism guards (`Math.random`, `Date.now` and argless `new Date` throw during a run)
-defend that, and the null-is-not-a-finding rule keeps infrastructure failures out of the
-results. The case for building this at all, rather than adopting LangGraph, Mastra or Inngest,
-is a design argument made in the review below. No comparison was measured.
-
-*How to read this:* confidence tags are an assessment of the evidence in this repo (sample sizes,
-seeds, intervals), added in a 2026-10 README audit; they are not new measurements.
+**Status: early and experimental (v0.1.0).** It is not on npm, and the npm name `heddle`
+belongs to an unrelated package, so install from GitHub ([Install](#install)).
 
 ## Contents
 
@@ -56,7 +24,7 @@ seeds, intervals), added in a 2026-10 README audit; they are not new measurement
 - [Decisions: `feels`, `match`, and the judge seam](#decisions-feels-match-and-the-judge-seam)
 - [Context files](#context-files-a-leaf-that-manages-its-own-memory)
 - [API](#api) · [Worked example](#worked-example) · [Validation](#validation)
-- [Status, scope and limitations](#status-scope-and-limitations) · [Provenance](#provenance)
+- [Limitations](#limitations)
 
 ## At a glance
 
@@ -107,13 +75,12 @@ To work on the library itself:
 ```sh
 git clone https://github.com/DJRHails/heddle && cd heddle
 npm ci
-npm run check    # tsc --noEmit, oxlint, vitest (37 tests, under 1 s, no network)
+npm run check    # tsc --noEmit, oxlint, vitest (offline, against stub backends and judges)
 npm run build    # emits dist/ with declarations
 ```
 
-Both recipes were run in the 2026-10 audit. The GitHub install exposes `run`, `Journal` and
-the rest of the `heddle` exports. The live examples need `ANTHROPIC_API_KEY` and make paid API
-calls ([Worked example](#worked-example)).
+There is no CI, so run `npm run check` before pushing. The live examples need
+`ANTHROPIC_API_KEY` and make paid API calls ([Worked example](#worked-example)).
 
 ## Design review (what this is, and what it deliberately is not)
 
@@ -144,9 +111,8 @@ infrastructure; its replay is sound but you adopt a service to get it. `p-limit`
 the Agent SDK's subagents covers the *primitives* in an afternoon but gives you none of the
 three properties above, and each is subtle enough to get wrong (see the null-vs-finding rule).
 The verdict: build the ~600-line library, not a framework. One runtime dependency (ajv).
-(The library was 582 lines of JavaScript under `src/` at the first commit. With the TypeScript
-port, the decision primitives, the judges and context files, `src/` is now about 1,600 lines.
-This comparison is a reasoned design judgement; none of the alternatives was benchmarked.)
+(That was the size of the first JavaScript version. With the TypeScript port, the decision
+primitives, the judges and context files, `src/` is now about 1,600 lines.)
 
 ### Departures from the prior art (Claude Code's Workflow tool), and why
 
@@ -383,14 +349,10 @@ filter; recipients in `.sops.yaml`). Once `glassine init` has decrypted it for y
 
 ## Validation
 
-Two kinds of evidence. The unit suite runs offline against stub backends and judges. It is
-deterministic and was re-run in the 2026-10 audit (37/37 passing). [confidence: ~90% that the
-listed behaviours hold] The live runs are single runs on one model (Haiku 4.5, plus Jev for the
-inbox emails), with one to two inputs per example. They were recorded in this README and in the
-descriptions of PRs #1 and #2. Their journals are gitignored and not committed, so the numbers
-below can't be checked from the repo. [confidence: ~70% that a re-run reproduces the qualitative
-behaviour; the individual probabilities are single draws, so treat them as illustrations, not
-measurements]
+The unit suite runs offline against stub backends and judges. The live runs below are single
+runs on one model (Haiku 4.5, plus Jev for the inbox emails), with one or two inputs per
+example, and their journals are not committed. Treat the probabilities as single draws that
+illustrate the behaviour, not as measurements.
 
 - `npm run check` — `tsc --noEmit` over `src`, `test` and `examples` (strict, with
   `noUncheckedIndexedAccess` and `erasableSyntaxOnly`, so every file also runs under Node's
@@ -440,42 +402,23 @@ measurements]
   the inbox example replayed all 29 calls the JavaScript version had journaled (Haiku and Jev
   runs alike) with zero new calls, and a fresh scheduling email then ran live end to end.
 
-## Status, scope and limitations
+## Limitations
 
-- **Maturity.** Version 0.1.0 with three commits. The API is still being added to: decisions
-  arrived in PR #1 and context files in PR #2. There is no npm release, no CI and no changelog.
-- **Trusted scripts only.** A script is an ordinary ES module in the runner's process, with
-  access to its environment and secrets. This is a stated design assumption
-  ([Departures from the prior art](#departures-from-the-prior-art-claude-codes-workflow-tool-and-why)).
-- **Determinism guards are a heuristic, not a boundary.** They exempt any call whose nearest
-  stack frame is `node:internal`. A script can still be non-deterministic through other means
-  (reading files, environment, or network outside `agent()`), and replay is only sound when it
-  is not.
-- **Abort and budgets act only at `agent()`/judgment calls.** A script busy-looping in plain
-  JavaScript can't be interrupted from inside, and there is no mid-run pause. Use kill plus
-  journal resume instead.
-- **Leaves are single model calls, not tool-using agents.** The shipped `anthropicBackend` calls
-  the Messages API and uses a tool only to force a schema. An Agent SDK backend is described as
-  fitting the same `Backend` signature, but none ships.
+- **Early API.** v0.1.0 and still growing. There is no npm release, CI or changelog yet.
+- **Trusted scripts only.** A script runs in the runner's process with its environment and
+  secrets ([Departures from the prior art](#departures-from-the-prior-art-claude-codes-workflow-tool-and-why)).
+- **The determinism guards are a heuristic.** They exempt calls whose nearest stack frame is
+  `node:internal`, and they don't stop a script reading files, the environment or the network
+  outside `agent()`. Replay is only sound if the script is deterministic.
+- **Abort and budgets act only at `agent()` and judgment calls.** A script busy-looping in plain
+  JavaScript can't be interrupted from inside, and there is no mid-run pause; kill it and resume
+  from the journal.
+- **Leaves are single model calls, not tool-using agents.** `anthropicBackend` uses a tool only to
+  force a schema. An Agent SDK backend would fit the same `Backend` signature, but none ships.
 - **The emulated judge isn't calibrated.** `llmJudge`'s probabilities are prompted estimates, and
-  thresholds tuned on it don't transfer to Jev (or the reverse). The comparisons between the two
-  judges above rest on three emails (an invitation, a sales pitch, a scheduling request).
-- **The context budget counts characters, not tokens.** It is a readout, not a gate. A full
+  thresholds tuned on it don't transfer to Jev (or the reverse). The Jev-versus-emulation
+  comparison in [Validation](#validation) covers two emails.
+- **The context budget counts characters, not tokens.** It is a readout, not a gate, and a full
   rewrite costs output tokens in proportion to the file.
-- **Most important missing piece:** a repeated, multi-input live evaluation. Every live number
-  in [Validation](#validation) is one run on one model.
-
-## Provenance
-
-The design review and the first implementation came out of a review conducted in an ephemeral
-container. The first commit (2026-08-21) reconstructs that build in JavaScript with 12 unit
-tests. PR #1 (2026-09-30) added the decision primitives and the Jev judge and ported the
-library to TypeScript. PR #2 (2026-10-02) added context files, after the Context Language Models
-paper cited above. The paper's figures in that section are quoted from it and were not checked
-in this audit. Live-run results were written up by the author in the PR descriptions and copied
-into [Validation](#validation).
-
-This README's status line, takeaways, install recipe, limitations and provenance were added in
-a 2026-10 audit. The audit read the source and tests, ran `npm ci`, `npm run check` and
-`npm run build`, and installed the package from GitHub into an empty project. It made no live
-API calls.
+- **No repeated live evaluation yet.** Every live number in [Validation](#validation) is one run
+  on one model.
