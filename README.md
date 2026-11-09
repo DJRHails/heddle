@@ -6,6 +6,28 @@ real code, and only the leaf calls are model-driven. A heddle is the loom part t
 selected warp threads so the shuttle can pass: the orchestrator decides which strands lift;
 the model is the shuttle.
 
+heddle is a small TypeScript library (Node 22.18+, one runtime dependency, `ajv`). It gives a
+script three orchestration primitives (`agent`, `parallel`, `pipeline`), three decision
+primitives (`feels`, `match`, `judge`), and `w.context`, a context file the model manages
+itself. Every call is journaled, and re-running a script replays the calls whose prompt and
+options are unchanged, so editing a late stage re-runs only that stage and what follows from it.
+
+**Status: early and experimental (v0.1.0).** It is not on npm, and the npm name `heddle`
+belongs to an unrelated package, so install from GitHub ([Install](#install)).
+
+## Contents
+
+- [At a glance](#at-a-glance) · [Install](#install)
+- [Design review](#design-review-what-this-is-and-what-it-deliberately-is-not) ·
+  [Departures from the prior art](#departures-from-the-prior-art-claude-codes-workflow-tool-and-why) ·
+  [Kept from the prior art](#kept-from-the-prior-art-because-it-is-right)
+- [Decisions: `feels`, `match`, and the judge seam](#decisions-feels-match-and-the-judge-seam)
+- [Context files](#context-files-a-leaf-that-manages-its-own-memory)
+- [API](#api) · [Worked example](#worked-example) · [Validation](#validation)
+- [Limitations](#limitations)
+
+## At a glance
+
 ```ts
 // script.ts — an ordinary ES module; no registry, no metadata block
 import type { Workflow } from "heddle";
@@ -39,6 +61,27 @@ switch (await w.match(email, ["a bug report", "a feature request", "something el
 while (await w.feels(draft, "full of corporate jargon", { confidence: 0.8 })) { draft = await rewrite(draft); }
 ```
 
+## Install
+
+Requires Node 22.18 or later. Install from GitHub, not from npm: `npm install heddle` fetches an
+unrelated package that happens to have the same name.
+
+```sh
+npm install github:DJRHails/heddle   # the `prepare` script builds dist/ during install
+```
+
+To work on the library itself:
+
+```sh
+git clone https://github.com/DJRHails/heddle && cd heddle
+npm ci
+npm run check    # tsc --noEmit, oxlint, vitest (offline, against stub backends and judges)
+npm run build    # emits dist/ with declarations
+```
+
+There is no CI, so run `npm run check` before pushing. The live examples need
+`ANTHROPIC_API_KEY` and make paid API calls ([Worked example](#worked-example)).
+
 ## Design review (what this is, and what it deliberately is not)
 
 This library exists because three specific properties were worth owning and nothing off the
@@ -68,6 +111,8 @@ infrastructure; its replay is sound but you adopt a service to get it. `p-limit`
 the Agent SDK's subagents covers the *primitives* in an afternoon but gives you none of the
 three properties above, and each is subtle enough to get wrong (see the null-vs-finding rule).
 The verdict: build the ~600-line library, not a framework. One runtime dependency (ajv).
+(That was the size of the first JavaScript version. With the TypeScript port, the decision
+primitives, the judges and context files, `src/` is now about 1,600 lines.)
 
 ### Departures from the prior art (Claude Code's Workflow tool), and why
 
@@ -324,6 +369,11 @@ It is built and verified offline, but not yet run live.
 
 ## Validation
 
+The unit suite runs offline against stub backends and judges. The live runs below are single
+runs on one model (Haiku 4.5, plus Jev for the inbox emails), with one or two inputs per
+example, and their journals are not committed. Treat the probabilities as single draws that
+illustrate the behaviour, not as measurements.
+
 - `npm run check` — `tsc --noEmit` over `src`, `test`, `examples` and `evals` (strict, with
   `noUncheckedIndexedAccess` and `erasableSyntaxOnly`, so every file also runs under Node's
   type stripping), `oxlint`, then the tests. `npm run build` emits `dist/` with declarations.
@@ -377,3 +427,24 @@ It is built and verified offline, but not yet run live.
 - The TypeScript port is journal-compatible: run from `.ts` source under Node's type stripping,
   the inbox example replayed all 29 calls the JavaScript version had journaled (Haiku and Jev
   runs alike) with zero new calls, and a fresh scheduling email then ran live end to end.
+
+## Limitations
+
+- **Early API.** v0.1.0 and still growing. There is no npm release, CI or changelog yet.
+- **Trusted scripts only.** A script runs in the runner's process with its environment and
+  secrets ([Departures from the prior art](#departures-from-the-prior-art-claude-codes-workflow-tool-and-why)).
+- **The determinism guards are a heuristic.** They exempt calls whose nearest stack frame is
+  `node:internal`, and they don't stop a script reading files, the environment or the network
+  outside `agent()`. Replay is only sound if the script is deterministic.
+- **Abort and budgets act only at `agent()` and judgment calls.** A script busy-looping in plain
+  JavaScript can't be interrupted from inside, and there is no mid-run pause; kill it and resume
+  from the journal.
+- **Leaves are single model calls, not tool-using agents.** `anthropicBackend` uses a tool only to
+  force a schema. An Agent SDK backend would fit the same `Backend` signature, but none ships.
+- **The emulated judge isn't calibrated.** `llmJudge`'s probabilities are prompted estimates, and
+  thresholds tuned on it don't transfer to Jev (or the reverse). The Jev-versus-emulation
+  comparison in [Validation](#validation) covers two emails.
+- **The context budget counts characters, not tokens.** It is a readout, not a gate, and a full
+  rewrite costs output tokens in proportion to the file.
+- **No repeated live evaluation yet.** Every live number in [Validation](#validation) is one run
+  on one model.
