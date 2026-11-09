@@ -139,7 +139,7 @@ export function llmJudge(backend: Backend, { model, maxTokens = 1024 }: LlmJudge
   }
   const judgeModel = model ? `llm:${model}` : "llm";
 
-  async function judge({ state, questions, signal }: JudgeRequest): Promise<JudgeResponse> {
+  async function judge({ state, questions, signal, meter }: JudgeRequest): Promise<JudgeResponse> {
     const entries = Object.entries(questions);
     if (entries.length === 0) throw new TypeError("judge: at least one question is required");
     const schema: JsonSchema = {
@@ -155,6 +155,7 @@ export function llmJudge(backend: Backend, { model, maxTokens = 1024 }: LlmJudge
       model,
       maxTokens,
       signal,
+      meter,
     });
     if (!payload || typeof payload !== "object") {
       throw new Error(`llm judge: backend returned no structured payload (${typeof payload})`);
