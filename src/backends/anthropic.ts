@@ -61,6 +61,7 @@ async function postMessages(
   if (meter && reply.usage) {
     meter({
       model: body.model,
+      provider: "anthropic",
       inputTokens: reply.usage.input_tokens ?? 0,
       outputTokens: reply.usage.output_tokens ?? 0,
       cacheReadTokens: reply.usage.cache_read_input_tokens ?? 0,

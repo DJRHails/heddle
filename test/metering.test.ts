@@ -8,7 +8,11 @@ import { anthropicBackend } from "../src/backends/anthropic.ts";
 import { llmJudge } from "../src/judges/llm.ts";
 import { run, type Backend, type CallReport, type Usage, type Workflow } from "../src/index.ts";
 
-const USAGE: Usage = { model: "stub-model", inputTokens: 100, outputTokens: 7 };
+const USAGE: Usage = {
+  model: "stub-model", inputTokens: 100, outputTokens: 7,
+  provider: "router", stage: "review", requestId: "req-1",
+  cost: { usd: 0.002, source: "provider", basis: "response receipt" },
+};
 
 /** A backend that meters one fixed usage per call and echoes the prompt. */
 const meteredBackend: Backend = async ({ prompt, meter }) => {
@@ -105,6 +109,7 @@ describe("usage metering", () => {
     expect(payload).toEqual({ score: 3 });
     const one = {
       model: "claude-haiku-4-5",
+      provider: "anthropic",
       inputTokens: 50,
       outputTokens: 5,
       cacheReadTokens: 10,

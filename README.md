@@ -313,9 +313,72 @@ strips types natively, so `node script.ts` needs no build step, and the package 
   (`{model, inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?}`).
   `anthropicBackend` meters every Messages request, schema retries included. The usage is
   journaled with the call, so a replayed call still reports what it cost.
+  Optional `provider`, `stage`, `requestId` and `cost: {usd, source, basis?}` fields retain
+  billing provenance as well. `source` is `"provider"` for a returned receipt or
+  `"estimate"` for caller-supplied pricing. Missing cost means unpriced, not free.
 - Judges (`Judge`) are plain async functions `({state, questions, signal, meter}) → {answers}` in
   Jev's request and answer shapes, with a `.model` property that enters the journal key:
   Jev's `judge` and the emulated `llmJudge` (`heddle/judges/jev`, `heddle/judges/llm`).
+
+### Store and summarise costs
+
+`costBreakdown(reports)` groups metered usage by provider, model, stage and call kind. It
+separates `live` usage from `replayed` historical usage: replay never adds new spend. Each
+bucket has `providerUsd`, `estimatedUsd`, `unpricedRequests`, token counts and request count.
+Do not describe the sum as a complete bill while unpriced requests or unmetered calls remain.
+Failed calls and metered retries count too; zero-dollar receipts remain distinct from missing
+receipts. A request with a provider receipt uses that receipt rather than adding a token
+estimate for the same request.
+
+```ts
+import { run, costBreakdown, type CallReport } from "heddle";
+import { judge } from "heddle/judges/jev";
+
+const reports: CallReport[] = [];
+await run(script, {
+  backend,
+  judge: judge({
+    apiKey, model: "jev-1.14.0", stage: "screen",
+    inputUsdPerMillion: 0.042, // example rate from a dated experiment; supply your own
+  }),
+  journalPath: "run.jsonl",
+  resume: true,
+  onCall: call => reports.push(call),
+});
+console.log(costBreakdown(reports));
+```
+
+The built-in Jev adapter meters returned input/output usage. Its optional
+`inputUsdPerMillion` produces an explicitly labelled **input-only estimate**, retaining the
+configured rate in `cost.basis`. Omitting it still records tokens and marks them unpriced.
+No live price table is built into the library. Anthropic identifies its provider and records
+tokens; its dollar cost stays unknown unless an adapter supplies a price or receipt.
+
+A custom backend can retain a router's billed charge directly:
+
+```ts
+meter?.({
+  model: response.model, provider: "openrouter", stage: "review",
+  requestId: response.id,
+  inputTokens: uncachedInputTokens, outputTokens,
+  cacheReadTokens: cachedInputTokens,
+  cost: { usd: response.usage.cost, source: "provider", basis: "response usage.cost" },
+});
+```
+
+Check that the response actually contains a finite cost before supplying it; never turn a
+missing receipt into zero. Attach stage metadata in the adapter so it survives journal
+replay. The existing journal stores these optional fields with successes and non-abort
+errors, and `onCall` returns them on replay. Older journals still load; their missing dollar
+costs remain unpriced. A journal can also be summarised offline by parsing its entries and
+passing `{kind, status, usage: entry.usage ?? [], replayed: false}` to `costBreakdown`: that
+reports **historical recorded spend**, not the cost of reading the file. Persist the returned
+JSON with the experiment's artifacts if you need a standalone report.
+
+Reservations and provider-account reconciliation remain the caller's responsibility. HTTP
+failures without returned usage, hidden transport retries and aborted calls can carry unknown
+charges; a usage summary cannot establish that they were free. Token-based estimates do not
+include unobserved platform fees or other account charges.
 
 ## Worked example
 
