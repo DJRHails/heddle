@@ -14,7 +14,7 @@
  */
 
 import { postJson } from "../backends/transport.ts";
-import type { Judge, JudgeRequest, JudgeResponse } from "../types.ts";
+import type { Judge, JudgeRequest, JudgeResponse, Usage } from "../types.ts";
 
 const API_URL = "https://api.typesafe.ai/v1/systemone";
 
@@ -26,19 +26,43 @@ export interface JevConfig {
    * thresholds, since an alias moves under you.
    */
   model?: string;
+  /** Optional input-only USD/M-token rate. Caller-supplied estimate, not a receipt. */
+  inputUsdPerMillion?: number;
+  /** Optional pipeline stage to retain with metered usage. */
+  stage?: string;
 }
 
-export function judge({ apiKey, model = "jev-latest" }: JevConfig): Judge {
+export function judge({ apiKey, model = "jev-latest", inputUsdPerMillion, stage }: JevConfig): Judge {
   if (!apiKey) throw new TypeError("judge({apiKey}): apiKey is required");
+  if (inputUsdPerMillion !== undefined &&
+    (!Number.isFinite(inputUsdPerMillion) || inputUsdPerMillion < 0)) {
+    throw new TypeError("judge: inputUsdPerMillion must be finite and nonnegative");
+  }
 
-  async function judge({ state, questions, signal }: JudgeRequest): Promise<JudgeResponse> {
+  async function judge({ state, questions, signal, meter }: JudgeRequest): Promise<JudgeResponse> {
     const reply = await postJson<JudgeResponse | null>(API_URL, {
       headers: { authorization: `Bearer ${apiKey}` },
       body: { model, state, questions },
       signal,
       label: "jev",
     });
-    if (!reply || typeof reply.answers !== "object") {
+    if (reply && reply.usage && typeof reply.usage === "object") {
+      const usage = reply.usage as { input_tokens?: number; output_tokens?: number };
+      if (typeof usage.input_tokens === "number" && Number.isFinite(usage.input_tokens) &&
+        usage.input_tokens >= 0 && typeof usage.output_tokens === "number" &&
+        Number.isFinite(usage.output_tokens) && usage.output_tokens >= 0) {
+        const entry: Usage = {
+          model: reply.model ?? model, provider: "typesafe", stage,
+          inputTokens: usage.input_tokens, outputTokens: usage.output_tokens,
+        };
+        if (inputUsdPerMillion !== undefined) entry.cost = {
+          usd: usage.input_tokens * inputUsdPerMillion / 1_000_000,
+          source: "estimate", basis: `caller-supplied input-only USD ${inputUsdPerMillion}/M tokens`,
+        };
+        meter?.(entry);
+      }
+    }
+    if (!reply || !reply.answers || typeof reply.answers !== "object") {
       throw new Error(`jev reply carried no answers: ${JSON.stringify(reply).slice(0, 200)}`);
     }
     return reply;

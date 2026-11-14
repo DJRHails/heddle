@@ -26,6 +26,19 @@ export interface Usage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Billing provider, independent of the model vendor (e.g. "openrouter"). */
+  provider?: string;
+  /** Pipeline stage supplied by the adapter, retained on journal replay. */
+  stage?: string;
+  /** Provider request/generation ID, when available. */
+  requestId?: string;
+  /** Missing means unpriced, not free. Never replace a receipt with a token estimate. */
+  cost?: {
+    usd: number;
+    source: "provider" | "estimate";
+    /** Rate/version used for an estimate, or receipt/reconciliation provenance. */
+    basis?: string;
+  };
 }
 
 /** Where a backend or judge reports usage: once per provider request, retries included. */

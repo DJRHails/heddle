@@ -1,4 +1,6 @@
 export { run } from "./runner.ts";
+export { costBreakdown } from "./costs.ts";
+export type { CostBreakdown, CostGroup, CostTotals } from "./costs.ts";
 export type { RunOptions } from "./runner.ts";
 export { makeApi, isAbortError } from "./primitives.ts";
 export { Journal, callKey, judgeKey } from "./journal.ts";
